@@ -116,6 +116,9 @@ constexpr const char* kDefaultIniTail =
     "; follow Faith from behind; distance in metres (1.5..6)\r\n"
     "enabled=0\r\n"
     "distance=3\r\n"
+    "; camera-relative offsets in metres (-2..2); positive = right / up\r\n"
+    "horizontal_offset=0\r\n"
+    "vertical_offset=0\r\n"
     "\r\n"
     "[collision]\r\n"
     "; both runners must enable collision; crouch to offer a native springboard\r\n"
@@ -481,6 +484,10 @@ void load(const std::wstring& dir) {
     s.thirdPerson = readInt(ini, L"third_person", L"enabled", 0) != 0;
     const float cameraDistance = static_cast<float>(atof(readString(ini, L"third_person", L"distance", "3").c_str()));
     s.thirdPersonDistance = std::isfinite(cameraDistance) ? std::clamp(cameraDistance, 1.5f, 6.f) : 3.f;
+    const float cameraHorizontal = static_cast<float>(atof(readString(ini, L"third_person", L"horizontal_offset", "0").c_str()));
+    const float cameraVertical = static_cast<float>(atof(readString(ini, L"third_person", L"vertical_offset", "0").c_str()));
+    s.thirdPersonHorizontalOffset = std::isfinite(cameraHorizontal) ? std::clamp(cameraHorizontal, -2.f, 2.f) : 0.f;
+    s.thirdPersonVerticalOffset = std::isfinite(cameraVertical) ? std::clamp(cameraVertical, -2.f, 2.f) : 0.f;
     s.playerCollision = readInt(ini, L"collision", L"enabled", 0) != 0;
     s.playerSpringboard = readInt(ini, L"collision", L"springboard", 1) != 0;
     // The [ghost] model setting is gone: each player picks their own look ([player] look=) in the menu.
@@ -698,6 +705,8 @@ void applyPending() {
     put(L"player", L"look_self", snapshot->lookSelf ? "1" : "0");
     put(L"third_person", L"enabled", snapshot->thirdPerson ? "1" : "0");
     put(L"third_person", L"distance", std::to_string(snapshot->thirdPersonDistance));
+    put(L"third_person", L"horizontal_offset", std::to_string(snapshot->thirdPersonHorizontalOffset));
+    put(L"third_person", L"vertical_offset", std::to_string(snapshot->thirdPersonVerticalOffset));
     put(L"collision", L"enabled", snapshot->playerCollision ? "1" : "0");
     put(L"collision", L"springboard", snapshot->playerSpringboard ? "1" : "0");
     put(L"ui", L"menu_key", snapshot->menuKey);

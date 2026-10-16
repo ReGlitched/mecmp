@@ -78,22 +78,36 @@ filtering and reverb. The effect depends on the level's authored acoustic data.
 
 The copied sampler uses an unconnected unity-amplitude input. Muting that input
 would also mute injected speech downstream. Its native output voice stays scheduled
-while speech is active; the isolated instance's `SndPlayer0` PCM callback replaces
-the game sample with silence or decoded speech and supplies
-microphone samples before the downstream spatial modules. Original native FIFO
-bookkeeping is preserved. All other instances use the original callback unchanged.
+while speech is active; the isolated instance's `SndPlayer0` PCM callback at
+`0x142e17410` (dispatch slot `0x1420fd9f8`) replaces the game sample with
+silence or decoded speech and supplies
+microphone samples before the downstream spatial modules. Replacement only runs
+after the decoder reports a produced block, overwrites exactly its reported
+frame count and resamples speech to that block's native sample rate. Native
+buffer swaps, frame counts, channel counts, sample rates, readiness flags and
+no-output return values remain under the decoder's control. This preserves
+native FIFO bookkeeping and downstream block-size expectations. Source ownership uses Sound +0x1b0, a 40-byte
+VoiceRef array sized by SoundGraphInfo::Voices. Each row's +8 member is the
+Kernel pointer itself and matches module +0x20 directly. Sound +0x1b8 is a
+separate table. Ownership also matches Sound +0x188 against the private graph;
+Sound +0x198 is an internal description and differs from instance +0x28.
+The Sub0 callback at `0x1420fddc8` is not the sampler PCM output and is left
+untouched. Unsupported voice layouts prevent template creation, and a
+failed output-buffer replacement for an owned source drops the block instead
+of returning the pipe sample. All other instances use the original callback unchanged.
 There is no external playback device, synthetic echo, wall raycast filter or
 replacement of an existing player's sound. Shared game assets stay untouched.
 
-MECMP applies the voice-volume setting with a 0.8 receive-gain multiplier,
-making speech 20% quieter at close range for existing and new settings. The
-distance fade stays at full near gain within 2 metres, then follows
+MECMP applies the voice-volume setting with a 1.6 receive-gain multiplier,
+doubling the previous receive gain at the default volume for existing and
+new settings. Final receive gain is capped at 2, the native playback limit.
+The distance fade stays at full near gain within 2 metres, then follows
 `clamp((range - distance) / (range - 2), 0, 1)^1.5` and reaches silence at
 the selected hearing range. This falls off more strongly than the previous
 linear fade. A 5 ms gain ramp smooths changes. The native graph provides
 direction and environmental
 attenuation. The camera's third-person offset does not change MECMP's hearing
-range. PCM is resampled from 16 kHz to the game's rate before entering its mono
+range. PCM is resampled from 16 kHz to the native sampler's reported rate for its mono
 source buffer; the game handles final device channel layout and conversion.
 
 Native sound creation, mouth-position updates and stop/release run from the client
@@ -115,17 +129,20 @@ Image VAs at base `0x140000000`:
 
 | Purpose | Native address/layout |
 |---|---|
-| Native PCM source descriptor slot | `0x1420fddc8` → `0x142e17d10` (`SndPlayer0`) |
+| Native PCM source descriptor slot | `0x1420fd9f8` → `0x142e17410` (`SndPlayer0`) |
+| Sampler class / processing descriptor | class `0x1420fdaa0` +0x18 → dispatch `0x1420fd9e8` |
 | Existing kernel dispatch | `0x142dcf300`, calls processing descriptor `+0x10` |
 | Native sound instance / create | vtable `0x141acfad0`; system `+0x40` → `0x142fe2ee0` |
 | Sound description / channel | instance `+0x28` / `+0x30` |
-| Native sound / source kernel | channel `+0x20`; sound `+0x1b8` → VoiceRef, kernel `+8` |
-| Native source identity | sound `+0x198` = description; description `+0x90` = private asset |
+| Native sound / voices | channel `+0x20`; sound `+0x1b0` → 40-byte VoiceRef array |
+| Voice count | asset `+0x38` → graph; graph `+0x38` → Voices array; count at array `-4` |
+| Kernel identity | VoiceRef `+8` and processing module `+0x20` contain the same Kernel pointer |
+| Native source identity | instance description `+0x90` = private asset; Sound `+0x188` = its private graph |
 | Planar output buffer / frame count | mixer `+0xc490` / `+0xc4b8` |
 | Source rate / channel count | mixer `+0xc4bc` / `+0xc4c4` |
 | Output transform source | OutputNodeData `+0x54`: Sound=0, Listener=1 |
-| Obstruction / occlusion damping | OutputNodeData `+0x3c` / `+0x40` |
-| Reverb gain / native send | ConeOutputNodeData `+0xf0` / `+0xf8` |
+| Obstruction / occlusion damping | OutputNodeData `+0x3c` / `+0x40`; factors set to 1 |
+| Reverb gain / native send | ConeOutputNodeData `+0xf8` / `+0x100`; attenuation curve at `+0xe8` stays intact |
 | Device heartbeat descriptor | `0x1420fa368` → `0x142dfad40`; does not mix speech |
 
 Read-only inspection confirmed native instances, descriptions, AudioCore VoiceRef

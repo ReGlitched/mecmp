@@ -29,7 +29,6 @@ struct V3 {
 V3 vec(const float* p) { return {p[0], p[1], p[2]}; }
 void store(float* p, V3 v) { p[0] = v.x; p[1] = v.y; p[2] = v.z; }
 float length2(V3 v) { return v.x * v.x + v.y * v.y + v.z * v.z; }
-float horizontal2(V3 v) { return v.x * v.x + v.z * v.z; }
 bool finite(V3 v, float limit = 100000.f) {
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z) &&
         std::fabs(v.x) <= limit && std::fabs(v.y) <= limit && std::fabs(v.z) <= limit;
@@ -55,7 +54,7 @@ std::atomic<DWORD> g_clientAt{0}, g_thirdActiveAt{0};
 struct CameraProbe {
     uintptr_t client = 0, camera = 0;
     DWORD at = 0;
-    V3 eye, direction;
+    V3 eye, direction, right;
     float distance = 0;
 };
 std::mutex g_probeM;
@@ -104,9 +103,14 @@ void cameraTransform(void* camera, void* info, void* output) {
     }
     // Keep native look input, FOV, camera shake and parkour camera rotation.
     // Frostbite looks down -forward, so +forward moves the camera behind Faith.
-    const V3 direction = vec(transforms[0].forward);
     const V3 eye = vec(transforms[0].trans);
-    float distance = std::clamp(cfg->thirdPersonDistance, 1.5f, 6.f);
+    const V3 right = vec(transforms[0].right);
+    const V3 boom = vec(transforms[0].forward) * std::clamp(cfg->thirdPersonDistance, 1.5f, 6.f) +
+        right * std::clamp(cfg->thirdPersonHorizontalOffset, -2.f, 2.f) +
+        vec(transforms[0].up) * std::clamp(cfg->thirdPersonVerticalOffset, -2.f, 2.f);
+    float distance = std::sqrt(length2(boom));
+    if (!std::isfinite(distance) || distance < .1f) { g_thirdActiveAt = 0; return; }
+    const V3 direction = boom * (1.f / distance);
     {
         std::lock_guard<std::mutex> lock(g_probeM);
         const auto& p = g_clearanceProbe;
@@ -116,7 +120,8 @@ void cameraTransform(void* camera, void* info, void* output) {
         // results still suspend the override until a new probe arrives.
         const bool fresh = p.client == client && p.camera == reinterpret_cast<uintptr_t>(camera) &&
             now - p.at < 150 && length2(p.eye - eye) < 9.f;
-        g_probe = {client, reinterpret_cast<uintptr_t>(camera), now, eye, direction, cfg->thirdPersonDistance};
+        // Probe the full offset path so shoulder/height adjustments retract at walls too.
+        g_probe = {client, reinterpret_cast<uintptr_t>(camera), now, eye, direction, right, distance};
         if (!fresh) { g_thirdActiveAt = 0; return; }
         distance = std::min(distance, g_clearance);
     }
@@ -180,12 +185,10 @@ void tick() {
     const auto capsule = reinterpret_cast<uintptr_t>(getComponent(client, kCapsuleType));
     const uint32_t ownBody = capsule && mem::readOr<uint8_t>(capsule + 0x44)
         ? mem::readOr<uint32_t>(capsule + 0x40, ~0u) : ~0u;
-    float clearance = std::clamp(p.distance, 1.5f, 6.f);
+    float clearance = p.distance; // full boom length includes horizontal and vertical offsets
     // Three parallel probes give the near plane space next to walls. Native
     // physics body IDs exclude characters without skipping nearby world geometry.
-    V3 right = {p.direction.z, 0, -p.direction.x};
-    const float rightLength = std::sqrt(horizontal2(right));
-    if (rightLength > .01f) right = right * (.16f / rightLength);
+    const V3 right = p.right * .16f;
     for (V3 side : {V3{}, right, right * -1.f}) {
         const V3 from = p.eye + side;
         const V3 to = p.eye + p.direction * clearance + side;

@@ -6,19 +6,27 @@ Open **You → Gameplay**. Settings are saved in `mecmp.ini`:
 [third_person]
 enabled=0
 distance=3
+horizontal_offset=0
+vertical_offset=0
 
 [collision]
 enabled=0
 springboard=1
 ```
 
-The camera distance is 1.5–6 metres. Third person keeps native look controls, FOV,
-camera rotation and the regular Faith skeleton. `game/third_person.cpp` changes
+The camera distance is 1.5–6 metres. **Left / right offset** and **Up / down
+offset** each range from −2 to +2 metres and default to zero. Positive values
+move right/up along the camera axes; negative values move left/down. These
+offsets follow native camera rotation, including pitch and parkour roll.
+Third person keeps native look controls, FOV, camera rotation and the regular
+Faith skeleton. `game/third_person.cpp` changes
 the native camera output and uses native third-person body selection. There is
 no NPC rig replacement, pose remapping, duplicate player or echo recorder.
 
-The camera checks three rays behind the eye on the server simulation thread and
-retracts at walls. The native query excludes Faith's ClientCapsuleCollisionComponent
+The camera checks three rays along the full requested camera offset from the
+eye on the server simulation thread and retracts at walls. The ray spacing
+uses the native camera right axis. Obstructions shorten distance and both
+offsets together along that path. The native query excludes Faith's ClientCapsuleCollisionComponent
 body ID and other native character physics bodies by ID instead
 of guessing from surface normals. Solid scenery still counts close to the eye.
 The client retains a recent obstruction distance through ordinary turns while

@@ -17,15 +17,18 @@
 namespace mecmp::game::native_voice {
 namespace {
 constexpr uintptr_t kDacSlot = 0x1420fa368, kDacProcess = 0x142dfad40;
-constexpr uintptr_t kSourceSlot = 0x1420fddc8, kSourceProcess = 0x142e17d10;
+// SndPlayer0 outputs the sampler PCM. 0x1420fddc8 belongs to Sub0.
+constexpr uintptr_t kSourceSlot = 0x1420fd9f8, kSourceProcess = 0x142e17410;
+constexpr uintptr_t kSourceClass = 0x1420fdaa0, kSourceDispatch = 0x1420fd9e8;
 constexpr uintptr_t kInstanceVtable = 0x141acfad0, kSystemVtable = 0x141abd460;
 constexpr size_t kPeers = 15, kBlocks = 16, kFrames = 256;
+constexpr size_t kVoiceRefStride = 0x28;
+constexpr uint32_t kMaxGraphVoices = 64;
 using ProcessFn = uint64_t (*)(uintptr_t, uintptr_t, bool);
 ProcessFn g_originalDac = nullptr, g_originalSource = nullptr;
 uintptr_t g_instanceVtable = 0, g_managerAddress = 0;
 std::atomic<bool> g_installed{false}, g_templateReady{false};
 std::atomic<DWORD> g_outputAt{0};
-std::atomic<float> g_rate{48000.f};
 std::atomic<uint32_t> g_sourceCount{0};
 std::atomic<uint64_t> g_created{0}, g_blocksRendered{0};
 struct Block { uint32_t sequence = 0; bool valid = false; std::array<float, net::kVoiceSamples> pcm{}; };
@@ -100,6 +103,11 @@ Graph* copyGraph(uintptr_t asset) {
     const auto output = mem::readOr<uintptr_t>(outputs);
     if (!isKindOf(reinterpret_cast<void*>(output), 0x1427c7020) ||
         !mem::read(output, g.output, sizeof(g.output))) return nullptr;
+    // Sound +0x1b0 has one VoiceRef per compiled SoundGraphInfo voice.
+    // Refuse an unsupported layout before starting an audible template.
+    const auto voices = at<uintptr_t>(g.graph, 0x38);
+    const auto voiceCount = voices ? mem::readOr<uint32_t>(voices - 4) : 0;
+    if (!voiceCount || voiceCount > kMaxGraphVoices) return nullptr;
     const auto nodes = at<uintptr_t>(g.graph, 0x10);
     const auto count = nodes ? mem::readOr<uint32_t>(nodes - 4) : 0;
     if (!count || count > g.nodes.values.size() || !mem::read(nodes, g.nodes.data(), count * 8)) return nullptr;
@@ -142,20 +150,23 @@ Graph* copyGraph(uintptr_t asset) {
     // Faith's first-person graphs use Listener. A world voice must use Sound.
     put(g.output, 0x54, uint32_t{0});
     put(g.output, 0x44, 0.f); // dB
-    put(g.output, 0x3c, -12.f); put(g.output, 0x40, -24.f);
-    put(g.output, 0xf0, -6.f); // native room reverb send gain, dB
+    // Native HF damping fields are factors, not dB gains.
+    put(g.output, 0x3c, 1.f); put(g.output, 0x40, 1.f);
+    // ConeOutput ReverbGain is +0xf8; +0xf0 belongs to its attenuation curve.
+    put(g.output, 0xf8, -6.f); // native room reverb send gain, dB
     g.output[0x71] = 0; // no HDR ducking of conversational speech
     g_graphs.push_back(std::move(copy));
     MLOG("voice: native spatial graph ready (sound transform, obstruction and reverb)");
     return g_graphs.back().get();
 }
 
-// Read only our known instances. AudioCore's VoiceRef has an 8-byte handle
-// before its Kernel; a module's +0x20 points to that Kernel. The match occurs
-// in the audio callback, including the very first block after native creation.
+// Read only our known instances. Sound +0x1b0 is a 40-byte VoiceRef array,
+// sized by SoundGraphInfo::Voices. VoiceRef +8 holds the Kernel pointer
+// itself, exactly as module +0x20 does. Sound +0x1b8 is a separate table.
 int sourceIndex(uintptr_t module) {
     __try {
         const auto kernel = *reinterpret_cast<const uintptr_t*>(module + 0x20);
+        if (!kernel) return -1;
         for (size_t i = 0; i < kPeers; ++i) {
             const auto instance = g_sources[i].instance.load();
             const auto asset = g_sources[i].asset.load();
@@ -164,37 +175,41 @@ int sourceIndex(uintptr_t module) {
             const auto channel = *reinterpret_cast<const uintptr_t*>(instance + 0x30);
             if (!description || !channel || *reinterpret_cast<const uintptr_t*>(description + 0x90) != asset) continue;
             const auto sound = *reinterpret_cast<const uintptr_t*>(channel + 0x20);
-            if (sound && *reinterpret_cast<const uintptr_t*>(sound + 0x198) == description &&
-                *reinterpret_cast<const uintptr_t*>(sound + 0x1b8) + 8 == kernel) return static_cast<int>(i);
+            if (!sound) continue;
+            const auto graph = *reinterpret_cast<const uintptr_t*>(asset + 0x38);
+            // Sound owns an internal description distinct from instance +0x28.
+            // Its graph is the stable identity shared with our private asset.
+            if (!graph || *reinterpret_cast<const uintptr_t*>(sound + 0x188) != graph) continue;
+            const auto voiceInfo = graph ? *reinterpret_cast<const uintptr_t*>(graph + 0x38) : 0;
+            const auto count = voiceInfo ? *reinterpret_cast<const uint32_t*>(voiceInfo - 4) : 0;
+            const auto voices = *reinterpret_cast<const uintptr_t*>(sound + 0x1b0);
+            if (!voices || !count || count > kMaxGraphVoices) continue;
+            for (uint32_t voice = 0; voice < count; ++voice)
+                if (*reinterpret_cast<const uintptr_t*>(voices + voice * kVoiceRefStride + 8) == kernel)
+                    return static_cast<int>(i);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return -1;
 }
-struct Output { float* pcm = nullptr; uint32_t channels = 0, stride = 0; };
-bool sourceOutput(uintptr_t module, uintptr_t mixer, bool produced, Output& out) {
+struct Output { float* pcm = nullptr; uint32_t frames = 0; float rate = 0; };
+bool sourceOutput(uintptr_t mixer, Output& out) {
     __try {
-        // Preserve native FIFO bookkeeping, then replace only the mono buffer
-        // of our own source before its native low-pass/pan/reverb/send modules.
-        if (!produced) {
-            auto& a = *reinterpret_cast<uintptr_t*>(mixer + 0xc490);
-            auto& b = *reinterpret_cast<uintptr_t*>(mixer + 0xc498);
-            const auto old = a; a = b; b = old;
-        }
+        // SndPlayer0 owns buffer swaps, readiness and block size. Only inspect
+        // the output it actually produced; changing those fields breaks its
+        // decoder/FIFO contract and can corrupt downstream native modules.
+        out.frames = *reinterpret_cast<const uint32_t*>(mixer + 0xc4b8);
+        if (!out.frames) return true;
+        const auto channels = *reinterpret_cast<const uint8_t*>(mixer + 0xc4c4);
+        out.rate = *reinterpret_cast<const float*>(mixer + 0xc4bc);
         const auto buffer = *reinterpret_cast<const uintptr_t*>(mixer + 0xc490);
-        out.channels = *reinterpret_cast<const uint8_t*>(module + 0x52);
-        out.stride = buffer ? *reinterpret_cast<const uint16_t*>(buffer + 0x12) : 0;
+        const uint32_t stride = buffer ? *reinterpret_cast<const uint16_t*>(buffer + 0x12) : 0;
         out.pcm = buffer ? *reinterpret_cast<float* const*>(buffer + 8) : nullptr;
-        if (!out.pcm || out.channels != 1 || out.stride < kFrames || out.stride > 4096) return false;
-        *reinterpret_cast<uint32_t*>(mixer + 0xc4b8) = kFrames;
-        *reinterpret_cast<float*>(mixer + 0xc4bc) = g_rate.load();
-        *reinterpret_cast<uint8_t*>(mixer + 0xc4c4) = 1;
-        const auto kernel = *reinterpret_cast<const uintptr_t*>(module + 0x20);
-        *reinterpret_cast<uint8_t*>(kernel + 0x8a) = 1;
-        return true;
+        return out.pcm && channels == 1 && out.frames <= kFrames && stride >= out.frames && stride <= 4096 &&
+            std::isfinite(out.rate) && out.rate >= 8000.f && out.rate <= 192000.f;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 void render(size_t index, const Output& out, DWORD now) {
-    std::fill_n(out.pcm, kFrames, 0.f);
+    std::fill_n(out.pcm, out.frames, 0.f);
     std::unique_lock<std::mutex> lock(g_mutex, std::try_to_lock);
     if (!lock.owns_lock()) return;
     auto& s = g_speakers[index];
@@ -202,9 +217,9 @@ void render(size_t index, const Output& out, DWORD now) {
     if (now - s.received > 300) { clear(s); return; }
     if (static_cast<int32_t>(now - s.start) < 0) return;
     if (!s.primed) { s.a = pop(s); s.b = pop(s); s.primed = true; }
-    const float rate = g_rate.load(), step = static_cast<float>(net::kVoiceRate) / rate;
+    const float rate = out.rate, step = static_cast<float>(net::kVoiceRate) / rate;
     const float smooth = 1.f - std::exp(-1.f / (rate * .005f));
-    for (size_t i = 0; i < kFrames; ++i) {
+    for (size_t i = 0; i < out.frames; ++i) {
         s.gain += (s.mix.gain - s.gain) * smooth;
         out.pcm[i] = std::clamp((s.a + (s.b - s.a) * s.phase) * s.gain, -1.f, 1.f);
         s.phase += step;
@@ -214,12 +229,15 @@ void render(size_t index, const Output& out, DWORD now) {
 uint64_t sourceProcess(uintptr_t module, uintptr_t mixer, bool last) {
     const int index = sourceIndex(module);
     const auto result = g_originalSource(module, mixer, last);
-    if (index < 0) return result;
+    if (index < 0 || result != 1) return result;
     Output out;
-    if (!sourceOutput(module, mixer, result == 1, out)) return result;
-    render(static_cast<size_t>(index), out, GetTickCount());
-    ++g_blocksRendered;
-    return 1;
+    // An owned block with an invalid layout must not leak the template sample.
+    if (!sourceOutput(mixer, out)) return 0;
+    if (out.frames) {
+        render(static_cast<size_t>(index), out, GetTickCount());
+        ++g_blocksRendered;
+    }
+    return result;
 }
 void outputHeartbeat(uintptr_t dac) {
     __try {
@@ -228,7 +246,7 @@ void outputHeartbeat(uintptr_t dac) {
         if (!core || *reinterpret_cast<const uintptr_t*>(core + 0xa8) != dac) return;
         const float rate = *reinterpret_cast<const float*>(dac + 0xa8);
         if (std::isfinite(rate) && rate >= 8000 && rate <= 192000) {
-            g_rate = rate; g_outputAt = GetTickCount();
+            g_outputAt = GetTickCount();
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
@@ -254,6 +272,7 @@ void release(Source& source) {
 bool install() {
     if (g_installed) return true;
     if (mem::readOr<uintptr_t>(rva(kDacSlot)) != rva(kDacProcess) ||
+        mem::readOr<uintptr_t>(rva(kSourceClass) + 0x18) != rva(kSourceDispatch) ||
         mem::readOr<uintptr_t>(rva(kSourceSlot)) != rva(kSourceProcess)) {
         MLOG("voice: native source processing descriptors differ; playback unavailable");
         return false;
@@ -266,7 +285,7 @@ bool install() {
         mem::patchPointer(rva(kSourceSlot), rva(kSourceProcess), nullptr); return false;
     }
     g_installed = true;
-    MLOG("voice: native spatial PCM source hook installed");
+    MLOG("voice: native SndPlayer0 PCM replacement hook installed (native block sizes)");
     return true;
 }
 bool available() {

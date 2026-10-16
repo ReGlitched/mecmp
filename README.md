@@ -73,7 +73,7 @@ turn, so you can walk around it.
 ## Camera and player collision
 
 Under **You → Gameplay**, **Third person** follows Faith from behind with an adjustable
-camera distance. Walls retract the camera. It returns to the normal camera in game menus
+camera distance and left/right and up/down offsets. Walls retract the camera. It returns to the normal camera in game menus
 and when the view detaches from Faith.
 
 **Player collision** creates native Havok boxes fitted to the current model bounds for nearby runners when both

@@ -25,7 +25,7 @@
 namespace mecmp::game::voice_chat {
 namespace {
 // Receive-side balance applies to existing saved voice-volume settings too.
-constexpr float kPlaybackGain = .8f;
+constexpr float kPlaybackGain = 1.6f;
 std::atomic<bool> g_run{false};
 std::atomic<uint32_t> g_retry{0};
 HANDLE g_thread = nullptr;
@@ -171,7 +171,8 @@ DWORD WINAPI worker(void*) {
                 const float fade = std::clamp((range - distance) / (range - 2.f), 0.f, 1.f);
                 // fade^1.5 drops speech faster while keeping full near gain within 2 m.
                 const float distanceGain = fade * std::sqrt(fade);
-                const float volume = std::clamp(cfg->voiceVolume, 0.f, 2.f) * kPlaybackGain * distanceGain;
+                const float volume = std::clamp(
+                    std::clamp(cfg->voiceVolume, 0.f, 2.f) * kPlaybackGain * distanceGain, 0.f, 2.f);
                 native_voice::Mix mix;
                 mix.peer = remote.id; mix.gain = volume;
                 std::copy_n(position.pos, 3, mix.position);

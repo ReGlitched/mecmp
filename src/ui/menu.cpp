@@ -552,6 +552,15 @@ void gameplaySection() {
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
         if (ImGui::SliderFloat("Camera distance", &distance, 1.5f, 6.f, "%.1f m", ImGuiSliderFlags_AlwaysClamp))
             config::change([distance](config::Settings& c) { c.thirdPersonDistance = distance; });
+        float horizontal = cfg->thirdPersonHorizontalOffset, vertical = cfg->thirdPersonVerticalOffset;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+        if (ImGui::SliderFloat("Left / right offset", &horizontal, -2.f, 2.f, "%.2f m", ImGuiSliderFlags_AlwaysClamp))
+            config::change([horizontal](config::Settings& c) { c.thirdPersonHorizontalOffset = horizontal; });
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Negative moves left; positive moves right relative to the camera.");
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+        if (ImGui::SliderFloat("Up / down offset", &vertical, -2.f, 2.f, "%.2f m", ImGuiSliderFlags_AlwaysClamp))
+            config::change([vertical](config::Settings& c) { c.thirdPersonVerticalOffset = vertical; });
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Negative moves down; positive moves up relative to the camera.");
         ImGui::Unindent();
     }
     bool collision = cfg->playerCollision;
