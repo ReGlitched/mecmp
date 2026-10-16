@@ -76,11 +76,11 @@ Under **You → Gameplay**, **Third person** follows Faith from behind with an a
 camera distance and left/right and up/down offsets. Walls retract the camera. It returns to the normal camera in game menus
 and when the view detaches from Faith.
 
-**Player collision** creates native Havok boxes fitted to the current model bounds for nearby runners when both
-have enabled it. The game resolves contacts; collision does not write your position or velocity.
-With **Crouched player springboards** enabled on both PCs, crouch and have a friend run
-toward you and jump, as with a normal springboard. The game's native springboard processor
-and driver handle the move and animation. Third person and collision start off; settings
+**Player collision** creates native Havok capsules with fixed Faith-sized dimensions for nearby
+runners when both have enabled it. The game resolves contacts; collision does not write
+your position or velocity. Springboarding uses the game's controller and normal obstacle
+queries against those capsules, with no separate toggle or springboard hook.
+Third person and collision start off; settings
 are saved in `[third_person]` and `[collision]` in `mecmp.ini`.
 Both clients need this version for collision; the existing protocol-7 relay can stay in use.
 See [docs/PLAYER_OPTIONS.md](docs/PLAYER_OPTIONS.md) for implementation details and limits.

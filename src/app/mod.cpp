@@ -14,7 +14,6 @@
 #include "game/fingerprint.h"
 #include "game/third_person.h"
 #include "game/collision.h"
-#include "game/springboard.h"
 #include "game/voice_chat.h"
 #include "game/ghosts.h"
 #include "game/players_map.h"
@@ -68,7 +67,6 @@ void onTick(void* world, float dt) {
     { prof::Scope s(prof::Models); game::models::tick(); }
     game::third_person::tick();
     game::collision::tick();
-    game::springboard::tick();
     if (n % 30 == 0) game::runs::serverTick(); // registers our run listener once the server context exists
     if (n % 60 == 0) game::players_map::publishOwnProfile(); // every ~2 s: online id (Beat Revival) and the setting
 }
@@ -253,7 +251,6 @@ void run(HMODULE self) {
     game::ghosts::setEnabled(hooks.ghostClients);
     game::third_person::install();
     game::collision::install();
-    game::springboard::install();
     // The game is exiting: stop sending and close the router port while the network still works.
     ui::setOnWindowDestroyed([] {
         MLOG("game window closed: stopping multiplayer");

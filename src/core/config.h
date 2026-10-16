@@ -98,7 +98,6 @@ struct Settings {
     float thirdPersonHorizontalOffset = 0.f, thirdPersonVerticalOffset = 0.f;
     // [collision]
     bool playerCollision = false;
-    bool playerSpringboard = true;        // offer / use native springboards on crouched runners
     // [ghost]
     bool autoSpawn = true;
     // [ui]

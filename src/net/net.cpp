@@ -990,7 +990,7 @@ void handlePacket(const char* buf, int n, const sockaddr_in& from) {
         r.asksVisit = (flags & proto::kHelloAskVisit) != 0;
         // Repeated announcements can arrive out of order. A delayed crouch must not undo a stand.
         if (!r.physicalAt || static_cast<int32_t>(h.seq - r.physicalSeq) > 0) {
-            r.physicalFlags = flags & (proto::kHelloCollision | proto::kHelloCrouched | proto::kHelloSpringboard);
+            r.physicalFlags = flags & (proto::kHelloCollision | proto::kHelloCrouched);
             r.physicalAt = GetTickCount();
             r.physicalSeq = h.seq;
         }
@@ -2112,7 +2112,6 @@ std::vector<RemoteInfo> remotes(uint32_t maxAgeMs) {
         info.physicalAgeMs = r.physicalAt ? now - r.physicalAt : UINT32_MAX;
         info.collision = (r.physicalFlags & proto::kHelloCollision) != 0;
         info.crouched = (r.physicalFlags & proto::kHelloCrouched) != 0;
-        info.springboard = (r.physicalFlags & proto::kHelloSpringboard) != 0;
         if (r.activity.kind != proto::kActivityNone && r.activityAt && now - r.activityAt < kActivityForgetMs) {
             info.runKind = r.activity.kind;
             info.runMs = r.activity.elapsedMs + (now - r.activityAt);
@@ -2180,9 +2179,9 @@ void setLook(uint32_t look, uint8_t outfit) {
     g_outfit = look ? 0 : outfit;
 }
 
-void setPhysicalState(bool collision, bool crouched, bool springboard) {
+void setPhysicalState(bool collision, bool crouched) {
     const uint8_t flags = collision ? static_cast<uint8_t>(proto::kHelloCollision |
-        (crouched ? proto::kHelloCrouched : 0) | (springboard ? proto::kHelloSpringboard : 0)) : 0;
+        (crouched ? proto::kHelloCrouched : 0)) : 0;
     g_physicalAt = GetTickCount();
     if (g_physicalFlags.exchange(flags) != flags) ++g_physicalRevision;
 }

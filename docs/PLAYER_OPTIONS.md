@@ -11,7 +11,6 @@ vertical_offset=0
 
 [collision]
 enabled=0
-springboard=1
 ```
 
 The camera distance is 1.5–6 metres. **Left / right offset** and **Up / down
@@ -64,24 +63,11 @@ there is no additional shape/bounds network packet. The registered capsule is a
 zero-mass native collision body, and Faith's own movement sweep still contributes
 its normal radius at contact. The menu reports registered native body count.
 
-Enable **Crouched player springboards** on both PCs, then crouch to offer a
-springboard. Another runner approaches and jumps using the normal springboard
-controls. `game/springboard.cpp` feeds the crouched runner's back into the native
-`SpringboardProcessorAsset` as an obstacle that can be stood on and vaulted.
-The springboard observation comes from the near shoulder of the registered
-crouched capsule's upper hemisphere, using the same fixed dimensions.
-Catalyst's movement history, timestamp, jump-start input, eligibility checks,
-springboard driver and animation remain in charge. There is no custom upward
-impulse, forced springboard state or direct write to springboard output flags.
-
-The native processor receives a temporary copy of its own asset with five
-obstacle readers substituted: position, normal, can-stand, can-vault and type.
-Its real MoveEnumTracker, TimestampNow, JumpStartPosition and all output references
-are preserved. The original shared asset and its input variables are never
-modified. The processor consumes these inputs synchronously, adding observations
-to its own per-actor history, and its normal driver decides whether to use them.
-A closer eligible world obstacle takes priority. The override only applies when
-the ANT evaluation context resolves to the local player's current ANT instance.
+Springboarding is left to Catalyst's controller and normal Havok obstacle
+queries against the registered capsules. MECMP does not hook the springboard
+processor or override its perception, eligibility, driver or animation.
+There is no separate springboard toggle; old `[collision] springboard`
+settings are ignored.
 
 Hidden players, loopback ghosts, updates older than 300 ms, expired collision
 announcements, players beyond 80 m, leaving multiplayer, disabling collision and
@@ -93,8 +79,9 @@ storage has process lifetime so deferred engine operations cannot use freed memo
 Shared character/physics assets and the Faith skeleton are never modified.
 
 The native move tracker supplies crouch state 19, so keyboard and controller
-remapping both work. Optional HELLO flags announce collision (0x10), crouch (0x20)
-and springboard (0x40). Changes are repeated three times at a bounded rate and
+remapping both work. Optional HELLO flags announce collision (0x10) and
+crouch (0x20). The retired 0x40 bit is ignored and remains unused. Changes
+are repeated three times at a bounded rate and
 normal heartbeats renew them. STATE packets, bone protections and protocol 7
 remain unchanged. Existing relays preserve these flags; older clients ignore
 them and continue to appear without collisions.
@@ -115,9 +102,6 @@ Native points for the supported PC executable (image base 0x140000000):
 | Body transform / source | 0x1434f8930 / 0x1434f6d90 |
 | Native body enable / spatial registration | 0x1434e90f0 / 0x1434e9270 |
 | Spatial removal / disable / deferred destruction | 0x1434f6610 / 0x1434f65f0 / 0x1434f5550 |
-| Native springboard processor | vtable slot 0x141aabc50 → 0x142f29960 |
-| ANT instance from actor context | 0x142c2cb70 |
-| Native springboard observation history | 0x142ee8d80 / 0x142f170c0 |
 
 Camera hooks require both expected vtable slots. Collision validates the native
 capsule factory's call sites and rigid-body virtuals before enabling the feature.

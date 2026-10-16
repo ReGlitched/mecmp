@@ -22,7 +22,6 @@
 #include "game/ghosts.h"
 #include "game/third_person.h"
 #include "game/collision.h"
-#include "game/springboard.h"
 #include "game/ping_point.h"
 #include "game/raycast.h"
 #include "game/teleport.h"
@@ -574,13 +573,6 @@ void gameplaySection() {
     if (collision) {
         ImGui::Indent();
         ImGui::TextDisabled("Native collision bodies: %u", game::collision::bodyCount());
-        ImGui::BeginDisabled(!game::springboard::available());
-        bool springboard = cfg->playerSpringboard;
-        if (ImGui::Checkbox("Crouched player springboards", &springboard))
-            config::change([springboard](config::Settings& c) { c.playerSpringboard = springboard; });
-        ImGui::EndDisabled();
-        if (!game::springboard::available()) ImGui::TextDisabled("Native springboard hook unavailable for this game build.");
-        ImGui::TextWrapped("Crouch to offer a springboard.");
         ImGui::Unindent();
     }
 }

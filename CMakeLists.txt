@@ -54,7 +54,6 @@ add_library(mecmp SHARED
   src/game/fingerprint.cpp
   src/game/third_person.cpp
   src/game/collision.cpp
-  src/game/springboard.cpp
   src/game/hooks.cpp
   src/game/level.cpp
   src/game/ghosts.cpp

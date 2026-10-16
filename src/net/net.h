@@ -47,7 +47,7 @@ struct RemoteInfo {
     uint32_t runMs = 0;     // how long that run has been going, counted on to now
     std::string runTitle;   // its name
     bool asksVisit = false; // they want to be asked before anyone goes to them (VISIT, protocol.h)
-    bool collision = false, crouched = false, springboard = false;
+    bool collision = false, crouched = false;
     uint32_t physicalAgeMs = UINT32_MAX;
 };
 
@@ -213,7 +213,7 @@ std::string lanCode();    // host: code for players on the same network
 void setName(const std::string& name);
 void setLook(uint32_t look, uint8_t outfit = 0); // our look, sent to everyone (see RemoteInfo::look, outfit)
 // Native movement state, announced on change and with the normal HELLO heartbeat.
-void setPhysicalState(bool collision, bool crouched, bool springboard);
+void setPhysicalState(bool collision, bool crouched);
 // Our EA online id and profile name, sent in HELLO so the others' maps can show our Runner Tag; id 0 = not shared.
 void setOnlineProfile(uint64_t id, const char* name);
 std::string joinCode(); // the host's code (empty until set up, or when not reachable)

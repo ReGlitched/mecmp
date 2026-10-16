@@ -121,9 +121,8 @@ constexpr const char* kDefaultIniTail =
     "vertical_offset=0\r\n"
     "\r\n"
     "[collision]\r\n"
-    "; both runners must enable collision; crouch to offer a native springboard\r\n"
+    "; both runners must enable native Havok player collision\r\n"
     "enabled=0\r\n"
-    "springboard=1\r\n"
     "\r\n"
     "[protection]\r\n"
     "; host: maximum limb translation in metres (0.5..2); every receiver also enforces 2 m\r\n"
@@ -489,7 +488,6 @@ void load(const std::wstring& dir) {
     s.thirdPersonHorizontalOffset = std::isfinite(cameraHorizontal) ? std::clamp(cameraHorizontal, -2.f, 2.f) : 0.f;
     s.thirdPersonVerticalOffset = std::isfinite(cameraVertical) ? std::clamp(cameraVertical, -2.f, 2.f) : 0.f;
     s.playerCollision = readInt(ini, L"collision", L"enabled", 0) != 0;
-    s.playerSpringboard = readInt(ini, L"collision", L"springboard", 1) != 0;
     // The [ghost] model setting is gone: each player picks their own look ([player] look=) in the menu.
     const std::string legacyModel = readString(ini, L"ghost", L"model", "");
     if (!legacyModel.empty() && legacyModel != "faith")
@@ -708,7 +706,6 @@ void applyPending() {
     put(L"third_person", L"horizontal_offset", std::to_string(snapshot->thirdPersonHorizontalOffset));
     put(L"third_person", L"vertical_offset", std::to_string(snapshot->thirdPersonVerticalOffset));
     put(L"collision", L"enabled", snapshot->playerCollision ? "1" : "0");
-    put(L"collision", L"springboard", snapshot->playerSpringboard ? "1" : "0");
     put(L"ui", L"menu_key", snapshot->menuKey);
     put(L"ui", L"menu_pad", snapshot->menuPad);
     put(L"ui", L"show_names", snapshot->showNames ? "1" : "0");

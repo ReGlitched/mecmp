@@ -427,7 +427,7 @@ constexpr uint8_t kHelloAskVisit = 8;
 // Crouch comes from the native move tracker, so remapped controls work too.
 constexpr uint8_t kHelloCollision = 16;
 constexpr uint8_t kHelloCrouched = 32;
-constexpr uint8_t kHelloSpringboard = 64;
+// Bit 6 (0x40) is retired; leave it unused for protocol-7 compatibility.
 // `wear`: what a player whose look is 0 (Faith) changed about her outfit; 0 = nothing, each viewer
 // shows her as in their own game. The bits are game::models::Wear. Hosts and servers pass the byte on
 // with the rest of the packet; older versions do not send it and ignore it.

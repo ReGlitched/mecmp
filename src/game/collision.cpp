@@ -12,7 +12,6 @@
 #include "game/ghosts.h"
 #include "game/hooks.h"
 #include "game/level.h"
-#include "game/springboard.h"
 #include "game/teleport.h"
 #include "net/net.h"
 
@@ -177,7 +176,7 @@ void tick() {
     g_client = alive ? reinterpret_cast<uintptr_t>(client) : 0;
     g_clientAt = GetTickCount();
     net::setPhysicalState(alive && cfg->playerCollision && available() && !teleport::busy(),
-                          state == 19, cfg->playerSpringboard && springboard::available());
+                          state == 19);
 }
 void clientTick() {
     if (!available()) return;
@@ -254,23 +253,5 @@ void clientTick() {
         else if (b.object) ++count;
     }
     g_bodies = count;
-}
-bool springboardSurface(uint32_t peer, const float* toward, float* position) {
-    if (!toward || !position || !finite3(toward)) return false;
-    const float length = std::sqrt(toward[0] * toward[0] + toward[2] * toward[2]);
-    if (length < .001f) return false;
-    std::lock_guard<std::mutex> lock(g_updateMutex);
-    for (const auto& b : g_slots) {
-        if (b.peer != peer || !b.crouched || !b.wanted || !ours(b)) continue;
-        // A point on the near shoulder of the upper hemisphere. The native
-        // springboard processor still decides whether to perform the move.
-        constexpr float kShoulder = .70710678f;
-        const float reach = kRadius * kShoulder;
-        position[0] = b.transform.trans[0] + toward[0] / length * reach;
-        position[1] = b.transform.trans[1] + kCrouchHeight * .5f - kRadius + reach;
-        position[2] = b.transform.trans[2] + toward[2] / length * reach;
-        return true;
-    }
-    return false;
 }
 } // namespace mecmp::game::collision
