@@ -17,7 +17,12 @@
 #include "core/config.h"
 #include "game/mumble_link.h"
 #include "game/player_audio.h"
+#include "game/voice_chat.h"
+#include "game/native_voice.h"
 #include "game/ghosts.h"
+#include "game/third_person.h"
+#include "game/collision.h"
+#include "game/springboard.h"
 #include "game/ping_point.h"
 #include "game/raycast.h"
 #include "game/teleport.h"
@@ -43,7 +48,7 @@ char g_reactLabel[config::kPingSlots][net::protocol::kMaxPingLabelBytes + 1] = {
 bool g_inited = false;
 bool g_keyCapture = false; // waiting for a new menu key
 int g_bindCapture = -1;        // which key of the Controls tab is being recorded (see kKeyBinds; -1 = none)
-std::string g_bindNote[11];    // why the last key was refused (empty = nothing to say)
+std::string g_bindNote[12];    // why the last key was refused (empty = nothing to say)
 std::string g_menuKeyNote;     // the same for the menu key
 std::string g_padNote[static_cast<int>(gamepad::Action::Count)]; // the same for each gamepad combination
 gamepad::Action g_padCapture = gamepad::Action::Count; // which gamepad binding is being recorded (Count = none)
@@ -532,6 +537,45 @@ void voiceStatus() {
     ImGui::Unindent();
 }
 
+void gameplaySection() {
+    const auto cfg = config::get();
+    ImGui::SeparatorText("Gameplay");
+    bool third = cfg->thirdPerson;
+    ImGui::BeginDisabled(!game::third_person::available());
+    if (ImGui::Checkbox("Third person", &third))
+        config::change([third](config::Settings& c) { c.thirdPerson = third; });
+    ImGui::EndDisabled();
+    if (!game::third_person::available()) ImGui::TextDisabled("Camera hook unavailable for this game build.");
+    if (third) {
+        ImGui::Indent();
+        float distance = cfg->thirdPersonDistance;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+        if (ImGui::SliderFloat("Camera distance", &distance, 1.5f, 6.f, "%.1f m", ImGuiSliderFlags_AlwaysClamp))
+            config::change([distance](config::Settings& c) { c.thirdPersonDistance = distance; });
+        ImGui::Unindent();
+    }
+    bool collision = cfg->playerCollision;
+    ImGui::BeginDisabled(!game::collision::available());
+    if (ImGui::Checkbox("Player collision", &collision))
+        config::change([collision](config::Settings& c) { c.playerCollision = collision; });
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Both players must enable this. Runners block each other and can land on each other.");
+    ImGui::EndDisabled();
+    if (!game::collision::available()) ImGui::TextDisabled("Native collision bodies unavailable for this game build.");
+    if (collision) {
+        ImGui::Indent();
+        ImGui::TextDisabled("Native collision bodies: %u", game::collision::bodyCount());
+        ImGui::BeginDisabled(!game::springboard::available());
+        bool springboard = cfg->playerSpringboard;
+        if (ImGui::Checkbox("Crouched player springboards", &springboard))
+            config::change([springboard](config::Settings& c) { c.playerSpringboard = springboard; });
+        ImGui::EndDisabled();
+        if (!game::springboard::available()) ImGui::TextDisabled("Native springboard hook unavailable for this game build.");
+        ImGui::TextWrapped("Crouch to offer a springboard.");
+        ImGui::Unindent();
+    }
+}
+
 // You tab: what the player shares or allows.
 void privacySection() {
     const auto cfg = config::get();
@@ -626,7 +670,51 @@ void voiceSection() {
     if (ImGui::SliderFloat("Sound distance", &distance, 5.f, 200.f, "%.0f m"))
         config::change([distance](config::Settings& c) { c.playerAudioDistance = distance; });
     ImGui::TextDisabled("%s", game::player_audio::status().c_str());
-    ImGui::SeparatorText("Voice");
+    ImGui::SeparatorText("Proximity chat");
+    const auto cfg = config::get();
+    bool voice = cfg->voiceEnabled;
+    if (ImGui::Checkbox("Enable proximity chat", &voice))
+        config::change([voice](config::Settings& c) { c.voiceEnabled = voice; });
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Microphone speech through this MECMP session and the games audio output.");
+    if (voice) {
+        ImGui::Indent();
+        bool microphone = cfg->voiceMicrophone, open = cfg->voiceOpenMic;
+        if (ImGui::Checkbox("Microphone", &microphone))
+            config::change([microphone](config::Settings& c) { c.voiceMicrophone = microphone; });
+        if (ImGui::Checkbox("Open microphone", &open))
+            config::change([open](config::Settings& c) { c.voiceOpenMic = open; });
+        if (!open) ImGui::Text("Hold %s to talk. Change the key/gamepad bind in Controls > Voice chat.",
+                              cfg->voiceKey.empty() ? "your gamepad talk buttons" : ui::keyLabel(cfg->voiceKey).c_str());
+        float range = cfg->voiceDistance, volume = cfg->voiceVolume, gain = cfg->voiceMicGain;
+        if (ImGui::SliderFloat("Voice range", &range, 5.f, 100.f, "%.0f m", ImGuiSliderFlags_AlwaysClamp))
+            config::change([range](config::Settings& c) { c.voiceDistance = range; });
+        if (ImGui::SliderFloat("Voice volume", &volume, 0.f, 2.f, "%.2fx", ImGuiSliderFlags_AlwaysClamp))
+            config::change([volume](config::Settings& c) { c.voiceVolume = volume; });
+        if (ImGui::SliderFloat("Microphone gain", &gain, 0.f, 4.f, "%.2fx", ImGuiSliderFlags_AlwaysClamp))
+            config::change([gain](config::Settings& c) { c.voiceMicGain = gain; });
+        const auto status = game::voice_chat::status();
+        ImGui::TextWrapped("%s", status.detail.c_str());
+        const auto playback = game::native_voice::playbackStatus();
+        ImGui::TextDisabled("Voice packets: sent %llu, received %llu. Sources: %u (created %llu), PCM blocks: %llu.",
+            static_cast<unsigned long long>(status.sent), static_cast<unsigned long long>(status.received),
+            playback.sources, static_cast<unsigned long long>(playback.created), static_cast<unsigned long long>(playback.blocks));
+        ImGui::TextDisabled("Input: Windows default communications microphone");
+        if (status.transmitting) {
+            ImGui::ProgressBar(status.microphoneLevel, ImVec2(-1, 0), "Microphone level");
+        }
+        if (ImGui::SmallButton("Retry microphone")) game::voice_chat::retryMicrophone();
+        for (const auto& peer : status.peers) {
+            ImGui::PushID(static_cast<int>(peer.id));
+            bool muted = peer.muted;
+            if (ImGui::Checkbox("Mute", &muted)) game::voice_chat::mute(peer.id, muted);
+            ImGui::SameLine();
+            ImGui::Text("%s%s", peer.name.c_str(), peer.speaking ? " (speaking)" : "");
+            ImGui::PopID();
+        }
+        ImGui::Unindent();
+    }
+    ImGui::SeparatorText("Mumble Link");
     bool mumble = config::get()->mumbleLink;
     if (ImGui::Checkbox("Positional voice (Mumble)", &mumble))
         config::change([mumble](config::Settings& c) { c.mumbleLink = mumble; });
@@ -797,7 +885,7 @@ struct KeyBind {
     bool (*set)(const std::string&);
     int mouse;  // 0 = the keyboard only, 1 = also the middle button and Mouse 4 / 5
 };
-const KeyBind kKeyBinds[11] = {
+const KeyBind kKeyBinds[12] = {
     {"Tap to place a marker. Hold to open the marker wheel.", &config::Settings::pingKey, &ui::setPingKey, 1},
     {"Tap twice to remove the marker you look at (or stand at). Hold for a moment to remove all your markers.",
      &config::Settings::pingClearKey, &ui::setPingClearKey, 1},
@@ -823,6 +911,8 @@ const KeyBind kKeyBinds[11] = {
     {"Hold to open the players panel: right click a player to go to them, click players to pick them and summon "
      "them with the button below (or everyone), 1-9 go to that player. Letting go of the key only closes it.",
      &config::Settings::playersKey, &ui::setPlayersKey, 1},
+    {"Hold to transmit your microphone to nearby players while proximity chat is enabled.",
+     &config::Settings::voiceKey, &ui::setVoiceKey, 1},
 };
 
 void keyRow(const config::Settings& cfg, int which) {
@@ -1501,6 +1591,11 @@ void controlsSection() {
                "The same on a gamepad: tap sends your last answer, hold opens the answers wheel.");
     }
     if (ImGui::CollapsingHeader("Chat")) keyRow(*cfg, 2);
+    if (ImGui::CollapsingHeader("Voice chat")) {
+        keyRow(*cfg, 11);
+        padRow("Gamepad:", gamepad::Action::Voice, cfg->voicePad, &config::Settings::voicePad,
+               "Hold to talk to nearby players. Enable proximity chat in the Players tab.");
+    }
     if (ImGui::CollapsingHeader("Overlay")) {
         ImGui::TextUnformatted("Hide / show names, markers, arrows, notices and chat (hold)");
         ImGui::Indent();
@@ -1715,6 +1810,7 @@ void draw(bool open) {
         }
         if (ImGui::BeginTabItem("You")) {
             myLookSection();
+            gameplaySection();
             privacySection();
             ImGui::EndTabItem();
         }

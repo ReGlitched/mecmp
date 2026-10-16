@@ -10,7 +10,7 @@ change the server address (e.g. Beat Revival) keep working alongside it. The onl
 opt-in `share_profile` setting (off by default), which sends your EA online id and profile name to
 the players in your session.
 
-Status: public beta (0.9.0, see [CHANGELOG.md](CHANGELOG.md)). Ghosts are visual only (no collision).
+Status: public beta (0.9.0, see [CHANGELOG.md](CHANGELOG.md)). Player collision is optional.
 Download the latest release from the [Releases](https://github.com/CodeNameMeteor/mecmp/releases) page.
 
 ## Use
@@ -70,6 +70,21 @@ Solo test (developer builds only): *Solo test* in the menu, or `join=127.0.0.1:4
 ghost copies your moves 3 m away along the world X axis (`loopback_offset`); it stays put while you
 turn, so you can walk around it.
 
+## Camera and player collision
+
+Under **You → Gameplay**, **Third person** follows Faith from behind with an adjustable
+camera distance. Walls retract the camera. It returns to the normal camera in game menus
+and when the view detaches from Faith.
+
+**Player collision** creates native Havok boxes fitted to the current model bounds for nearby runners when both
+have enabled it. The game resolves contacts; collision does not write your position or velocity.
+With **Crouched player springboards** enabled on both PCs, crouch and have a friend run
+toward you and jump, as with a normal springboard. The game's native springboard processor
+and driver handle the move and animation. Third person and collision start off; settings
+are saved in `[third_person]` and `[collision]` in `mecmp.ini`.
+Both clients need this version for collision; the existing protocol-7 relay can stay in use.
+See [docs/PLAYER_OPTIONS.md](docs/PLAYER_OPTIONS.md) for implementation details and limits.
+
 ## Player game sounds
 
 Other players' footsteps, hand contacts, cloth movement, parkour landings, breathing,
@@ -82,10 +97,26 @@ Hosts and dedicated servers limit limb reach before forwarding poses. Clients
 also enforce their own limits on bone size, translation, rotation, and packet
 shape before applying poses to the game.
 
-## Positional voice (Mumble)
+## Proximity chat
 
-MECMP has no voice chat of its own; it tells [Mumble](https://www.mumble.info) where you are, so
-players hear each other from the direction of their ghost, quieter with distance.
+Enable **Players → Proximity chat → Enable proximity chat** on both PCs, then hold
+**N** to talk. **Controls → Voice chat** changes the keyboard/mouse key or adds a
+gamepad combination. Open microphone is optional. The Windows default communications
+microphone is used, and capture pauses while menus/chat are open or the game is
+unfocused. Receiving stays available with your microphone muted.
+
+Speech travels through MECMP's existing UDP session and plays through Catalyst's
+native spatial sound graphs at each speaker's position, with the game's
+obstruction filtering and room reverb. Speech enters before spatial processing.
+The default range is 35 metres. The Players tab also provides voice volume,
+microphone gain, player mutes, a microphone meter and capture status. Steam and
+Mumble are not required. Update clients and the dedicated server if one is used.
+See [docs/PROXIMITY_VOICE.md](docs/PROXIMITY_VOICE.md) for settings and implementation.
+
+## Positional voice (Mumble, optional)
+
+The separate [Mumble](https://www.mumble.info) Link integration is also available:
+it tells Mumble where you are so its own voice is positioned in the game world.
 
 1. Everyone installs Mumble and joins the same Mumble server and channel.
 2. In Mumble: *Settings > Audio Output > Positional Audio* on, and *Settings > Plugins > Link* enabled

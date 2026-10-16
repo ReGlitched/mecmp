@@ -40,6 +40,7 @@ constexpr uint16_t kTypeResult = 9; // a finished dash or other run, with its ti
 constexpr uint16_t kTypeActivity = 10; // the run the sender is in now, with its clock (see ACTIVITY below)
 constexpr uint16_t kTypeVisit = 13; // "may I come to you?" and its answer (see VISIT below)
 constexpr uint16_t kTypeAudio = 15; // native movement event + scalar inputs (player_audio.h)
+constexpr uint16_t kTypeVoice = 16; // u32 stream | u32 sequence | 320 mu-law speech samples
 // 14 is RENDEZVOUS (below): not a session packet, so it is not in knownType.
 // type 5 INFO: a server list's question "who are you?" and a dedicated server's answer. Not a session
 // packet: it is not in knownType (never stored or forwarded), and a server answers it whatever the
@@ -65,7 +66,7 @@ constexpr uint16_t kTypeRendezvous = 14;
 constexpr bool knownType(uint16_t type) {
     return type == kTypeState || type == kTypeHello || type == kTypeChat || type == kTypePing || type == kTypeReact ||
            type == kTypeSummon || type == kTypeSummonReply || type == kTypeResult || type == kTypeActivity ||
-           type == kTypeVisit || type == kTypeAudio;
+           type == kTypeVisit || type == kTypeAudio || type == kTypeVoice;
 }
 constexpr size_t kMaxChatBytes = 120; // UTF-8, after cleaning
 constexpr size_t kNameLen = 24;
@@ -84,6 +85,8 @@ struct Header {
 static_assert(sizeof(Header) == 16, "header");
 size_t writeAudio(char* buf, const Header& h, const PlayerAudio& sample);
 bool readAudio(const char* payload, size_t size, PlayerAudio& out);
+size_t writeVoice(char* buf, const Header& h, const VoiceFrame& frame);
+bool readVoice(const char* payload, size_t size, VoiceFrame& out);
 
 struct Encoder { // sender side: translations of the last full packet
     int16_t lastFullT[kMaxPoseBones][3] = {};
@@ -420,6 +423,11 @@ constexpr uint8_t kHelloServer = 2;
 constexpr uint8_t kHelloMembersHard = 4;
 // bit 3: the sender wants to be asked before anyone goes to them (VISIT). Passed on as it is.
 constexpr uint8_t kHelloAskVisit = 8;
+// Optional player collision. Older clients ignore these HELLO bits; existing relays preserve them.
+// Crouch comes from the native move tracker, so remapped controls work too.
+constexpr uint8_t kHelloCollision = 16;
+constexpr uint8_t kHelloCrouched = 32;
+constexpr uint8_t kHelloSpringboard = 64;
 // `wear`: what a player whose look is 0 (Faith) changed about her outfit; 0 = nothing, each viewer
 // shows her as in their own game. The bits are game::models::Wear. Hosts and servers pass the byte on
 // with the rest of the packet; older versions do not send it and ignore it.

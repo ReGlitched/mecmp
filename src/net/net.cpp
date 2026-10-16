@@ -83,6 +83,7 @@ struct Remote {
     proto::RecentIds<128> audioSeen;
     DWORD audioWindow = 0;
     int audioBurst = 0;
+    VoiceBucket voiceBucket;
     proto::RecentIds<16> chatSeen; // message ids already shown (repeats are dropped)
     DWORD chatBurstAt = 0;       // flood limit
     int chatBurst = 0;
@@ -106,6 +107,9 @@ struct Remote {
     DWORD lastSummonAt = 0;                // the last summon of theirs that reached us (summon::kMinGapMs)
     bool haveSummon = false;
     bool asksVisit = false;                // their HELLO: ask before going to them (kHelloAskVisit)
+    uint8_t physicalFlags = 0;
+    DWORD physicalAt = 0;
+    uint32_t physicalSeq = 0;
     proto::RecentIds<16> visitSeen;        // VISIT packets already handled (id and kind)
     DWORD visitBurstAt = 0;                // flood limit
     int visitBurst = 0;
@@ -126,10 +130,14 @@ struct Member {
     proto::Decoder poseDecoder;
     proto::Encoder poseEncoder; // re-encodes its checked poses: deltas stay deltas
     guard::Bucket bucket;     // how fast it may send (net/host_guard.h)
+    VoiceBucket voiceBucket;
 };
 
 std::mutex g_m;
 std::deque<RemoteAudio> g_audio;
+std::deque<RemoteVoice> g_voice;
+struct OutVoice { VoiceFrame frame; DWORD at; };
+std::deque<OutVoice> g_voiceOut;
 std::map<uint32_t, Remote> g_remotes;     // by session id
 std::vector<sockaddr_in> g_sendTo;        // JOIN: the host. HOST: kept in sync with g_members
 std::vector<Member> g_members;            // HOST: connected joiners
@@ -148,6 +156,9 @@ DWORD g_localAt = 0; // when g_local was published
 std::string g_name;
 std::atomic<uint32_t> g_look{0};
 std::atomic<uint8_t> g_outfit{0};
+std::atomic<uint8_t> g_physicalFlags{0};
+std::atomic<DWORD> g_physicalAt{0};
+std::atomic<uint32_t> g_physicalRevision{0};
 
 std::atomic<bool> g_run{false};
 std::thread g_thread;
@@ -294,6 +305,20 @@ proto::Header header(uint16_t type) {
     return proto::Header{proto::kMagic, proto::kProtocol, type, g_session, ++seq};
 }
 
+void sendPendingVoice() {
+    std::deque<OutVoice> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        pending.swap(g_voiceOut);
+    }
+    const DWORD now = GetTickCount();
+    char buf[proto::kMaxPacket];
+    for (const auto& item : pending)
+        if (now - item.at <= 120)
+            sendAll(buf, proto::writeVoice(buf, {proto::kMagic, proto::kProtocol, proto::kTypeVoice,
+                                                g_session, item.frame.sequence}, item.frame));
+}
+
 std::atomic<bool> g_typing{false};
 
 void sendState() {
@@ -326,6 +351,8 @@ void sendHello() {
         if (config::get()->membersMayHardSummon) flags = static_cast<uint8_t>(flags | proto::kHelloMembersHard);
     }
     if (config::get()->askBeforeVisit) flags = static_cast<uint8_t>(flags | proto::kHelloAskVisit);
+    if (GetTickCount() - g_physicalAt.load() < 500)
+        flags = static_cast<uint8_t>(flags | g_physicalFlags.load());
     proto::OnlineProfile profile;
     {
         std::lock_guard<std::mutex> lock(g_m);
@@ -830,7 +857,11 @@ void handlePacket(const char* buf, int n, const sockaddr_in& from) {
             m->poseDecoder = {};
             m->poseEncoder = {};
         }
-        if (!m->bucket.take(GetTickCount())) { ++g_dropped; return; } // flooding: not forwarded, not processed
+        if (h.type == proto::kTypeVoice) {
+            VoiceFrame frame;
+            if (!proto::readVoice(buf + sizeof(h), static_cast<size_t>(n) - sizeof(h), frame) ||
+                !m->voiceBucket.take(GetTickCount())) { ++g_dropped; return; }
+        } else if (!m->bucket.take(GetTickCount())) { ++g_dropped; return; }
         // A joiner's HELLO goes on without the "I host" flag: only the host's own HELLO may set it.
         const char* out = buf;
         if (h.type == proto::kTypeState) {
@@ -928,6 +959,17 @@ void handlePacket(const char* buf, int n, const sockaddr_in& from) {
         r.loopback = own;
         if (peerLogAllowed()) MLOG("net: new player %08x from %s%s", h.session, addrToString(from).c_str(), own ? " (our own packets: solo test)" : "");
     }
+    // Speech has its own stream sequence and jitter window. Do not let an
+    // out-of-order voice packet change STATE's ordering or loss estimator.
+    if (h.type == proto::kTypeVoice) {
+        VoiceFrame frame;
+        if (!proto::readVoice(data + sizeof(h), static_cast<size_t>(n) - sizeof(h), frame) ||
+            !r.voiceBucket.take(GetTickCount())) { ++g_dropped; return; }
+        if (g_voice.size() >= 128) g_voice.pop_front();
+        g_voice.push_back({h.session, GetTickCount(), frame});
+        ++g_recv;
+        return;
+    }
     // Sequence numbers restart when a player restarts the game: accept a large backwards jump.
     if (r.haveSeq && h.seq <= r.lastSeq && r.lastSeq - h.seq < 1000) return;
     const uint32_t gap = r.haveSeq && h.seq > r.lastSeq ? h.seq - r.lastSeq - 1 : 0;
@@ -946,6 +988,12 @@ void handlePacket(const char* buf, int n, const sockaddr_in& from) {
         proto::readHello(payload, len, raw, look, &flags, &wear, &profile);
         r.profile = profile;
         r.asksVisit = (flags & proto::kHelloAskVisit) != 0;
+        // Repeated announcements can arrive out of order. A delayed crouch must not undo a stand.
+        if (!r.physicalAt || static_cast<int32_t>(h.seq - r.physicalSeq) > 0) {
+            r.physicalFlags = flags & (proto::kHelloCollision | proto::kHelloCrouched | proto::kHelloSpringboard);
+            r.physicalAt = GetTickCount();
+            r.physicalSeq = h.seq;
+        }
         // Accepted only straight from the host (forwarded copies come from the host's address too, but have the flag cleared).
         if ((flags & proto::kHelloHost) && !own && g_role == Role::Join && sameAddr(from, g_hostAddr)) {
             g_hostSession = h.session;
@@ -1019,15 +1067,23 @@ void handlePacket(const char* buf, int n, const sockaddr_in& from) {
         if (!proto::readAudio(payload, len, sample)) { ++g_dropped; return; }
         if (r.audioSeen.seen(sample.id)) return;
         if (now - r.audioWindow >= 1000) { r.audioWindow = now; r.audioBurst = 0; }
-        if (++r.audioBurst > kMaxPlayerAudioPerSecond || !r.fill || now - r.lastTick > 1000) return;
+        if (++r.audioBurst > kMaxPlayerAudioPerSecond || (r.fill && now - r.lastTick > 1000)) return;
         r.audioSeen.add(sample.id);
         if (g_audio.size() >= 256) g_audio.pop_front();
         // Match the pose interpolation delay on the sender's clock. Do not
         // advance the pose clock with an out-of-order audio timestamp.
-        const double captured = r.clock.ext + static_cast<int32_t>(sample.timeMs - r.lastTime);
-        const double until = captured + r.minDelta + kInterpDelayMs - nowMs();
-        if (until < -500. || until > 500.) return;
-        const DWORD playAt = now + static_cast<DWORD>(static_cast<int32_t>(std::max(0., until)));
+        double delay = kInterpDelayMs;
+        if (r.haveDelta && r.clock.have) {
+            const double captured = r.clock.ext + static_cast<int32_t>(sample.timeMs - r.lastTime);
+            const double until = captured + r.minDelta + kInterpDelayMs - nowMs();
+            // A clock discontinuity/legacy capture clock uses arrival timing.
+            // Keep headroom below the playback expiry even for a future event.
+            if (until >= -static_cast<double>(kPlayerAudioMaxAgeMs) && until <= kPlayerAudioMaxAgeMs)
+                delay = std::clamp(until, 0., static_cast<double>(kPlayerAudioMaxDelayMs));
+        }
+        // A sound arriving just before the first pose gets the same bounded
+        // arrival buffer, giving that pose time to arrive before playback.
+        const DWORD playAt = now + static_cast<DWORD>(delay);
         g_audio.push_back({r.id, now, playAt, sample});
         return;
     }
@@ -1358,6 +1414,8 @@ void threadMain() {
     TimerResolution timerResolution;
     const DWORD started = GetTickCount();
     DWORD lastHello = 0, lastStats = started, lastHousekeeping = started, lastJoinWarn = 0, lastLease = started;
+    uint32_t physicalRevision = g_physicalRevision.load();
+    int physicalRepeats = 0;
     // Our own state goes out at 30 Hz: from a deadline on the high-resolution clock (not the 15.6 ms
     // GetTickCount), and the wait below ends at the deadline.
     constexpr double kSendMs = 1000.0 / 30.0;
@@ -1371,6 +1429,7 @@ void threadMain() {
         if (select(0, &rd, nullptr, nullptr, &tv) > 0) receiveAll();
         const DWORD now = GetTickCount();
         const double t = nowMs();
+        sendPendingVoice();
         if (t >= nextSend) {
             nextSend += kSendMs;
             if (t - nextSend > kSendMs) nextSend = t + kSendMs; // far behind (the PC stalled): no burst to catch up
@@ -1379,7 +1438,14 @@ void threadMain() {
             sendPendingBursts();
             sendActivity();
         }
-        if (now - lastHello >= 1000 || g_helloNow.exchange(false)) { lastHello = now; sendHello(); }
+        const uint32_t revision = g_physicalRevision.load();
+        if (revision != physicalRevision) { physicalRevision = revision; physicalRepeats = 3; }
+        const bool helloNow = g_helloNow.exchange(false);
+        if (now - lastHello >= 1000 || helloNow || (physicalRepeats && now - lastHello >= 50)) {
+            lastHello = now;
+            sendHello();
+            if (physicalRepeats) --physicalRepeats;
+        }
         rendezvousTick();
         if (now - lastStats >= 30000) { lastStats = now; MLOG("net: %s", describe().c_str()); }
         if (now - lastHousekeeping >= 1000) {
@@ -1441,6 +1507,7 @@ bool startLocked(uint16_t port, const std::string& join, float loopbackOffset, c
         std::lock_guard<std::mutex> lock(g_m);
         g_remotes.clear();
         g_audio.clear();
+        g_voice.clear(); g_voiceOut.clear();
         g_sendTo.clear();
         g_members.clear();
         g_reserved.clear();
@@ -1640,7 +1707,14 @@ void publishLocal(const PlayerState& s) {
 
 void publishAudio(PlayerAudio sample) {
     std::lock_guard<std::mutex> lock(g_m);
-    if (!g_run || g_outBurst.size() >= 128) return;
+    const auto now = GetTickCount();
+    if (!g_run || !g_haveLocal || now - g_localAt > 1000 || g_outBurst.size() >= 128) return;
+    // Capture time and g_localAt use the same monotonic wall clock. Translate
+    // the event directly onto the recorder clock instead of mixing QPC and
+    // GetTickCount deltas, or requiring both clocks to keep the same rate.
+    const int32_t age = static_cast<int32_t>(now - sample.timeMs);
+    if (age < 0 || static_cast<uint32_t>(age) > kPlayerAudioMaxAgeMs) return;
+    sample.timeMs = g_local.timeMs + static_cast<int32_t>(sample.timeMs - g_localAt);
     sample.id = nextBurstId();
     char buf[proto::kMaxPacket];
     const size_t n = proto::writeAudio(buf, proto::Header{}, sample);
@@ -1651,6 +1725,21 @@ std::vector<RemoteAudio> takeAudio() {
     std::vector<RemoteAudio> out(g_audio.begin(), g_audio.end());
     g_audio.clear(); return out;
 }
+
+void publishVoice(const VoiceFrame& frame, uint32_t generation) {
+    if (!frame.stream) return;
+    std::lock_guard<std::mutex> lock(g_m);
+    if (!g_run || generation != g_generation.load()) return;
+    if (g_voiceOut.size() >= 6) g_voiceOut.pop_front();
+    g_voiceOut.push_back({frame, GetTickCount()});
+}
+std::vector<RemoteVoice> takeVoice() {
+    std::lock_guard<std::mutex> lock(g_m);
+    std::vector<RemoteVoice> out(g_voice.begin(), g_voice.end());
+    g_voice.clear();
+    return out;
+}
+uint32_t sessionGeneration() { return g_generation.load(); }
 
 bool localState(PlayerState& out) {
     std::lock_guard<std::mutex> lock(g_m);
@@ -2020,6 +2109,10 @@ std::vector<RemoteInfo> remotes(uint32_t maxAgeMs) {
                          r.profile.name};
         info.typing = (r.stateFlags & kStateTyping) != 0;
         info.asksVisit = r.asksVisit;
+        info.physicalAgeMs = r.physicalAt ? now - r.physicalAt : UINT32_MAX;
+        info.collision = (r.physicalFlags & proto::kHelloCollision) != 0;
+        info.crouched = (r.physicalFlags & proto::kHelloCrouched) != 0;
+        info.springboard = (r.physicalFlags & proto::kHelloSpringboard) != 0;
         if (r.activity.kind != proto::kActivityNone && r.activityAt && now - r.activityAt < kActivityForgetMs) {
             info.runKind = r.activity.kind;
             info.runMs = r.activity.elapsedMs + (now - r.activityAt);
@@ -2085,6 +2178,13 @@ void setOnlineProfile(uint64_t id, const char* name) {
 void setLook(uint32_t look, uint8_t outfit) {
     g_look = look;
     g_outfit = look ? 0 : outfit;
+}
+
+void setPhysicalState(bool collision, bool crouched, bool springboard) {
+    const uint8_t flags = collision ? static_cast<uint8_t>(proto::kHelloCollision |
+        (crouched ? proto::kHelloCrouched : 0) | (springboard ? proto::kHelloSpringboard : 0)) : 0;
+    g_physicalAt = GetTickCount();
+    if (g_physicalFlags.exchange(flags) != flags) ++g_physicalRevision;
 }
 
 void setName(const std::string& name) {

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "net/player_audio.h"
+#include "net/voice.h"
 
 namespace mecmp::net {
 namespace protocol { struct Result; } // net/protocol.h
@@ -46,6 +47,8 @@ struct RemoteInfo {
     uint32_t runMs = 0;     // how long that run has been going, counted on to now
     std::string runTitle;   // its name
     bool asksVisit = false; // they want to be asked before anyone goes to them (VISIT, protocol.h)
+    bool collision = false, crouched = false, springboard = false;
+    uint32_t physicalAgeMs = UINT32_MAX;
 };
 
 // join: empty = host; otherwise a join code or ip:port of the host. Calling it again switches
@@ -66,6 +69,11 @@ void publishLocal(const PlayerState& s);
 void publishAudio(PlayerAudio sample);
 struct RemoteAudio { uint32_t peer = 0, receivedAt = 0, playAt = 0; PlayerAudio sample; };
 std::vector<RemoteAudio> takeAudio();
+// Microphone speech is sent once, promptly, on the existing session socket.
+void publishVoice(const VoiceFrame& frame, uint32_t generation);
+uint32_t sessionGeneration(); // changes even when rejoining the same host
+struct RemoteVoice { uint32_t peer = 0, receivedAt = 0; VoiceFrame frame; };
+std::vector<RemoteVoice> takeVoice();
 // Our own newest state. False when none was published in the last second (not in a level). Any thread.
 bool localState(PlayerState& out);
 // Remote players heard from in the last `maxAgeMs`.
@@ -204,6 +212,8 @@ uint32_t sessionKey();
 std::string lanCode();    // host: code for players on the same network
 void setName(const std::string& name);
 void setLook(uint32_t look, uint8_t outfit = 0); // our look, sent to everyone (see RemoteInfo::look, outfit)
+// Native movement state, announced on change and with the normal HELLO heartbeat.
+void setPhysicalState(bool collision, bool crouched, bool springboard);
 // Our EA online id and profile name, sent in HELLO so the others' maps can show our Runner Tag; id 0 = not shared.
 void setOnlineProfile(uint64_t id, const char* name);
 std::string joinCode(); // the host's code (empty until set up, or when not reachable)

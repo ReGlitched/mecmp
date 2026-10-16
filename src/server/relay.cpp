@@ -153,12 +153,20 @@ void Relay::onPacket(const Addr& from, const char* buf, size_t n, uint32_t nowMs
         m->poseDecoder = {};
         m->poseEncoder = {};
     }
-    // Rate limit (token bucket).
-    m->tokens += (nowMs - m->refillAt) * cfg_.ratePerSec / 1000.0;
-    if (m->tokens > cfg_.burst) m->tokens = cfg_.burst;
-    m->refillAt = nowMs;
-    if (m->tokens < 1) { ++stats_.dropped; ++m->dropped; return; }
-    m->tokens -= 1;
+    // Speech has a fixed-size, independent bandwidth budget. It cannot consume
+    // movement's tokens or relax the general flood limit.
+    if (h.type == proto::kTypeVoice) {
+        net::VoiceFrame frame;
+        if (!proto::readVoice(buf + sizeof(h), n - sizeof(h), frame) || !m->voiceBucket.take(nowMs)) {
+            ++stats_.dropped; ++m->dropped; return;
+        }
+    } else {
+        m->tokens += (nowMs - m->refillAt) * cfg_.ratePerSec / 1000.0;
+        if (m->tokens > cfg_.burst) m->tokens = cfg_.burst;
+        m->refillAt = nowMs;
+        if (m->tokens < 1) { ++stats_.dropped; ++m->dropped; return; }
+        m->tokens -= 1;
+    }
     m->lastSeen = nowMs;
     ++m->packets;
     ++stats_.received;
@@ -238,7 +246,7 @@ void Relay::onPacket(const Addr& from, const char* buf, size_t n, uint32_t nowMs
             send_(o.addr, out, n);
             ++stats_.relayed;
         }
-    if (cfg_.mirror && h.type != proto::kTypeChat) {
+    if (cfg_.mirror && h.type != proto::kTypeChat && h.type != proto::kTypeVoice) {
         char mirror[proto::kMaxPacket];
         memcpy(mirror, out, n);
         proto::Header mh = h;

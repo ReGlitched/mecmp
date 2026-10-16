@@ -52,6 +52,9 @@ add_library(mecmp SHARED
   src/game/camera.cpp
   src/game/camera_finder.cpp
   src/game/fingerprint.cpp
+  src/game/third_person.cpp
+  src/game/collision.cpp
+  src/game/springboard.cpp
   src/game/hooks.cpp
   src/game/level.cpp
   src/game/ghosts.cpp
@@ -59,6 +62,8 @@ add_library(mecmp SHARED
   src/game/mumble_link.cpp
   src/game/player_audio.cpp
   src/game/native_vocals.cpp
+  src/game/native_voice.cpp
+  src/game/voice_chat.cpp
   src/game/teleport.cpp
   src/game/local_player.cpp
   src/game/ping_point.cpp
@@ -76,6 +81,7 @@ add_library(mecmp SHARED
   src/ui/nametags.cpp
   src/ui/notices.cpp
   src/ui/chat.cpp
+  src/ui/voice.cpp
   src/ui/markers.cpp
   src/ui/glyph.cpp
   src/ui/radial.cpp
@@ -102,7 +108,7 @@ endif()
 if(MECMP_DEBUG_KEYS)
   target_compile_definitions(mecmp PRIVATE MECMP_DEBUG_KEYS=1)
 endif()
-target_link_libraries(mecmp PRIVATE ws2_32 d3d11 dxgi d3dcompiler dwmapi)
+target_link_libraries(mecmp PRIVATE ws2_32 d3d11 dxgi d3dcompiler dwmapi ole32)
 set_target_properties(mecmp PROPERTIES OUTPUT_NAME "mecmp" PREFIX "")
 
 # --- mecmp_inject.exe: loads mecmp.dll into the running game -------------------------------------

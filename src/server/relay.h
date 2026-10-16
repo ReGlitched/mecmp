@@ -66,6 +66,7 @@ struct Member {
     uint64_t packets = 0, dropped = 0;
     net::protocol::Decoder poseDecoder;
     net::protocol::Encoder poseEncoder; // re-encodes its checked poses: deltas stay deltas
+    net::VoiceBucket voiceBucket;
     bool announced = false; // its join was logged with a name
     uint32_t logAt = 0;     // the start of its current log window (see Relay::logAllowed)
     int logBurst = 0;       // log lines it has caused in that window

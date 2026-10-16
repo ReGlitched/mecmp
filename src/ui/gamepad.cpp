@@ -125,6 +125,9 @@ DWORD WINAPI getState(DWORD user, XINPUT_STATE* st) {
                     playersPressed = true; // held: the players panel
                     pad.swallow[a] = true;
                 }
+            } else if (a == static_cast<int>(Action::Voice)) {
+                if (config::get()->voiceEnabled && !ui::menuOpen() && !game::hooks::gameMenuOpen())
+                    pad.swallow[a] = true;
             } else if (a == static_cast<int>(Action::PingClear) && g_wheelPad.load() == static_cast<int>(user) &&
                        radial::engaged()) {
                 clearPressed = true; // only while the marker buttons are held; otherwise the game has these buttons

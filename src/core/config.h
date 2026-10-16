@@ -91,7 +91,13 @@ struct Settings {
     float boneReach = 1.f; // host clamp on each non-anchor replay translation, metres (.5..2)
     // [audio]
     bool playerAudio = false; // off until multiplayer playback has been play-tested
-    float playerAudioDistance = 80.f;
+    float playerAudioDistance = 40.f;
+    // [third_person]
+    bool thirdPerson = false;
+    float thirdPersonDistance = 3.f;
+    // [collision]
+    bool playerCollision = false;
+    bool playerSpringboard = true;        // offer / use native springboards on crouched runners
     // [ghost]
     bool autoSpawn = true;
     // [ui]
@@ -133,6 +139,11 @@ struct Settings {
     std::string pingClearKey = "X";       // as ping_key, or MOUSE3 (middle), MOUSE4, MOUSE5; empty = none
     std::string pingClearPad = "RS";      // gamepad buttons (as menu_pad); empty = none
     // [voice]
+    bool voiceEnabled = false;           // native microphone proximity chat through MECMP
+    bool voiceMicrophone = true;
+    bool voiceOpenMic = false;
+    float voiceDistance = 35.f, voiceVolume = 1.f, voiceMicGain = 1.f;
+    std::string voiceKey = "N", voicePad;
     bool mumbleLink = true;               // positional voice through Mumble's Link plugin
     bool showNotices = true;              // "<name> joined / left / placed a marker" at the top of the screen
     bool showChat = true;                 // chat messages bottom-left

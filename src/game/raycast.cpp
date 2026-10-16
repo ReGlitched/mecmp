@@ -1,6 +1,7 @@
 #include "game/raycast.h"
 
 #include <atomic>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -74,6 +75,61 @@ bool finite3(const float* v) {
     return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]) && std::fabs(v[0]) < 100000.f &&
            std::fabs(v[1]) < 100000.f && std::fabs(v[2]) < 100000.f;
 }
+
+constexpr uintptr_t kClosestRay = 0x1434e27f0;
+constexpr uintptr_t kCharacterBodyType = 0x142831080;
+constexpr uintptr_t kCharacterPhysicsType = 0x142830800;
+
+// Native ray-query layout, from the plain-ray branch of 0x143a24890 and its
+// collector 0x143512f10. Exclusions are exact physics body IDs, not distances
+// or surface normals. The collector reads this list and never modifies it.
+struct alignas(16) CameraQuery {
+    uint32_t flags = 1, pad4 = 0, filter = 9, padC = 0;
+    const uint32_t* ignoredBegin = nullptr;
+    const uint32_t* ignoredEnd = nullptr;
+    const uint32_t* ignoredCapacity = nullptr;
+    uint8_t reserved[0x38] = {};
+    float from[4] = {};
+    float to[4] = {};
+    uint8_t tail[16] = {};
+};
+static_assert(offsetof(CameraQuery, from) == 0x60 && offsetof(CameraQuery, to) == 0x70 &&
+              sizeof(CameraQuery) == 0x90, "Native camera ray query layout");
+struct alignas(16) CameraResult {
+    uint32_t id = ~0u, pad4 = 0;
+    uint64_t subId = ~uint64_t{};
+    uint32_t part = ~0u, pad14 = 0;
+    float fraction = 1.f;
+    uint32_t pad1C = 0;
+    float normal[4] = {}, position[4] = {};
+    uint8_t tail[16] = {};
+};
+static_assert(offsetof(CameraResult, fraction) == 0x18 && offsetof(CameraResult, normal) == 0x20 &&
+              offsetof(CameraResult, position) == 0x30 && sizeof(CameraResult) == 0x50, "Native ray result layout");
+
+bool cameraLayoutMatches() {
+    static const bool ok = [] {
+        const uint8_t expected[] = {0x49,0x89,0xe3,0x57,0x48,0x81,0xec,0xf0,0x02,0,0};
+        uint8_t got[sizeof(expected)] = {};
+        if (!mem::read(rva(kClosestRay), got, sizeof(got))) return false;
+        // Both encodings are MOV r11,rsp; the unpacked executable uses either.
+        const bool move = !std::memcmp(got, expected, 3) ||
+            (got[0] == 0x4c && got[1] == 0x8b && got[2] == 0xdc);
+        return move && !std::memcmp(got + 3, expected + 3, sizeof(got) - 3);
+    }();
+    return ok;
+}
+
+bool characterBody(uintptr_t phys, uint32_t id) {
+    // PhysicsManager::getBody (0x1434ee750): low 16 bits index the body table.
+    // The collector passes PhysicsWorld +8 (the manager), not the world wrapper.
+    const auto manager = mem::readOr<uintptr_t>(phys + 8);
+    const auto table = manager ? mem::readOr<uintptr_t>(manager + 0x130) : 0;
+    const auto end = manager ? mem::readOr<uintptr_t>(manager + 0x138) : 0;
+    const auto slot = table + static_cast<size_t>(id & 0xffffu) * 8;
+    void* body = table && slot < end ? mem::readOr<void*>(slot) : nullptr;
+    return body && (isKindOf(body, kCharacterBodyType) || isKindOf(body, kCharacterPhysicsType));
+}
 } // namespace
 
 bool available() { return checkFunction(); } // checked once (on the first call), then remembered
@@ -94,6 +150,41 @@ bool cast(const float from[3], const float to[3], Hit& out) {
     memcpy(out.normal, r.normal, sizeof(out.normal));
     out.distance = r.distance;
     return true;
+}
+
+bool castCamera(const float from[3], const float to[3], Hit& out, uint32_t ownBodyId) {
+    if (!checkFunction() || !finite3(from) || !finite3(to)) return false;
+    if (!cameraLayoutMatches()) return cast(from, to, out);
+    const uintptr_t world = mem::readOr<uintptr_t>(rva(kServerGameWorld));
+    const uintptr_t phys = world ? physics(world) : 0;
+    if (!phys) return false;
+    std::array<uint32_t, 16> ignored{};
+    size_t count = 0;
+    if (ownBodyId != ~0u) ignored[count++] = ownBodyId;
+    CameraQuery q;
+    std::memcpy(q.from, from, sizeof(float) * 3);
+    std::memcpy(q.to, to, sizeof(float) * 3);
+    q.ignoredBegin = ignored.data();
+    q.ignoredCapacity = ignored.data() + ignored.size();
+    const float dx = to[0] - from[0], dy = to[1] - from[1], dz = to[2] - from[2];
+    const float length = std::sqrt(dx * dx + dy * dy + dz * dz);
+    using Fn = bool (*)(void*, const CameraQuery*, CameraResult*);
+    for (; count <= ignored.size(); ++count) {
+        CameraResult r;
+        q.ignoredEnd = ignored.data() + count;
+        if (!reinterpret_cast<Fn>(rva(kClosestRay))(reinterpret_cast<void*>(phys), &q, &r)) return false;
+        if (!finite3(r.position) || !finite3(r.normal) || !std::isfinite(r.fraction) ||
+            r.fraction < 0.f || r.fraction > 1.f) return false;
+        // At the bound, treat the last hit as an obstruction rather than allowing wall clipping.
+        if (count == ignored.size() || !characterBody(phys, r.id)) {
+            std::memcpy(out.pos, r.position, sizeof(out.pos));
+            std::memcpy(out.normal, r.normal, sizeof(out.normal));
+            out.distance = length * r.fraction;
+            return true;
+        }
+        ignored[count] = r.id;
+    }
+    return false;
 }
 
 } // namespace mecmp::game::raycast

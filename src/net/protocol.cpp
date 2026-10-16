@@ -87,6 +87,24 @@ bool readAudio(const char* payload, size_t size, PlayerAudio& out) {
     out = a; return true;
 }
 
+size_t writeVoice(char* buf, const Header& h, const VoiceFrame& frame) {
+    if (!frame.stream) return 0;
+    char* p = buf;
+    put(p, h); put(p, frame.stream); put(p, frame.sequence);
+    std::memcpy(p, frame.samples.data(), frame.samples.size());
+    return sizeof(Header) + kVoicePayloadBytes;
+}
+bool readVoice(const char* payload, size_t size, VoiceFrame& out) {
+    if (size != kVoicePayloadBytes) return false;
+    VoiceFrame frame;
+    std::memcpy(&frame.stream, payload, 4);
+    std::memcpy(&frame.sequence, payload + 4, 4);
+    if (!frame.stream) return false;
+    std::memcpy(frame.samples.data(), payload + 8, frame.samples.size());
+    out = frame;
+    return true;
+}
+
 size_t writePing(char* buf, const Header& h, const Ping& pg) {
     char* p = buf;
     put(p, h);

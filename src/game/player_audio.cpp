@@ -46,13 +46,9 @@ bool g_haveVoiceRealm = false;
 struct Captured { net::PlayerAudio sample; DWORD at; };
 std::deque<Captured> g_captured;
 std::atomic<uint64_t> g_captures{0}, g_played{0};
+std::atomic<uint64_t> g_received{0}, g_rejected{0};
 std::atomic<uint64_t> g_vocalCaptures{0}, g_vocalPlayed{0};
 
-uint32_t timestamp() {
-    static const double frequency = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return static_cast<double>(f.QuadPart); }();
-    LARGE_INTEGER c; QueryPerformanceCounter(&c);
-    return static_cast<uint32_t>(static_cast<uint64_t>(static_cast<double>(c.QuadPart) * 1000. / frequency));
-}
 int sourceIndex(uintptr_t asset) {
     std::string name;
     if (!asset || !mem::readCString(mem::readOr<uintptr_t>(asset + Asset_Name), name, 192)) return -1;
@@ -73,7 +69,9 @@ bool graphKey(uintptr_t asset, size_t listOffset, uint32_t key) {
 }
 net::PlayerAudio snapshot(uintptr_t entity, uint8_t source, uint32_t event) {
     net::PlayerAudio sample;
-    sample.source = source; sample.event = event; sample.timeMs = timestamp();
+    sample.source = source; sample.event = event; sample.timeMs = GetTickCount();
+    const auto data = mem::readOr<uintptr_t>(entity + 0x28);
+    const auto asset = data ? mem::readOr<uintptr_t>(data + 0x18) : 0;
     uintptr_t begin = 0, end = 0;
     if (!mem::read(entity + 0x48, begin) || !mem::read(entity + 0x50, end) ||
         end < begin || (end - begin) % 0x28 || end - begin > 128 * 0x28) return sample;
@@ -83,7 +81,7 @@ net::PlayerAudio snapshot(uintptr_t entity, uint8_t source, uint32_t event) {
         // pointers/assets are deliberately never sent.
         if (mem::readOr<uint32_t>(p + 0x24, ~0u) != 0) continue;
         const auto key = mem::readOr<uint32_t>(p + 0x20);
-        if (!key) continue;
+        if (!key || !graphKey(asset, 0x70, key)) continue;
         const auto value = reinterpret_cast<uintptr_t(*)(uintptr_t, uintptr_t)>(rva(kNativePropertyValue))(p, rva(kFloatType));
         float scalar = 0;
         if (!value || !mem::read(value, scalar) || !std::isfinite(scalar) || std::fabs(scalar) > 100000.f) continue;
@@ -143,7 +141,7 @@ void vocalEventHook(uintptr_t entity, const void* event) {
         if (found != g_localData.end() && net::vocalSource(found->second)) {
             rememberRealm(entity);
             net::PlayerAudio sample;
-            sample.source = found->second; sample.event = hash; sample.timeMs = timestamp();
+            sample.source = found->second; sample.event = hash; sample.timeMs = GetTickCount();
             if (g_captured.size() >= 64) g_captured.pop_front();
             g_captured.push_back({sample, GetTickCount()}); ++g_captures; ++g_vocalCaptures;
         }
@@ -159,7 +157,9 @@ std::map<uint32_t, std::array<Playing, net::kPlayerAudioSourceCount>> g_playing;
 std::vector<std::unique_ptr<native_vocals::Playback>> g_retiringVocals;
 std::deque<net::RemoteAudio> g_pending;
 uintptr_t g_world = 0, g_character = 0;
-DWORD g_tickAt = 0, g_discoverAt = 0;
+DWORD g_tickAt = 0, g_discoverAt = 0, g_catalogueAt = 0;
+uint32_t g_generation = 0;
+bool g_catalogueComplete = false, g_catalogueLogged = false;
 void release(Playing& sound) {
     if (sound.vocal) {
         native_vocals::cancel(*sound.vocal);
@@ -194,6 +194,7 @@ void catalogue(uintptr_t character) {
     const auto count = list ? mem::readOr<uint32_t>(list - 4) : 0;
     if (count > 256) return;
     std::lock_guard<std::mutex> lock(g_mutex);
+    const auto previousCount = std::count_if(g_sources.begin(), g_sources.end(), [](const Source& s) { return s.data != 0; });
     const auto remember = [](uintptr_t component) {
         if (!component) return;
         if (isKindOf(reinterpret_cast<void*>(component), kSoundEntityDataType)) {
@@ -246,7 +247,10 @@ void catalogue(uintptr_t character) {
     for (size_t i = 0; i < g_sources.size(); ++i) if (g_sources[i].data) {
         if (i < net::kPlayerSoundCount) ++graphs; else ++vocals;
     }
-    MLOG("audio: local catalogue has %zu sound graphs and %zu vocal clips", graphs, vocals);
+    if (!g_catalogueLogged || graphs + vocals != static_cast<size_t>(previousCount))
+        MLOG("audio: local catalogue has %zu sound graphs and %zu vocal clips", graphs, vocals);
+    g_catalogueLogged = true;
+    g_catalogueComplete = graphs + vocals == g_sources.size();
 }
 void discoverActiveSounds() {
     // Looping breathing can start before our catalogue is ready. The native
@@ -301,16 +305,22 @@ void tick() {
     retireVocals();
     const auto world = level::serverWorld();
     const auto character = world && !level::inFrontEnd() ? reinterpret_cast<uintptr_t>(reinterpret_cast<void*(*)()>(rva(Fn_LocalClientCharacter))()) : 0;
-    if (world != g_world || character != g_character) {
+    const auto generation = net::sessionGeneration();
+    if (world != g_world || character != g_character || generation != g_generation) {
         clearSounds();
         { std::lock_guard<std::mutex> lock(g_mutex); g_sources = {}; g_localData.clear(); g_captured.clear(); g_haveVoiceRealm = false; }
-        g_world = world; g_character = character;
-        g_discoverAt = now - 1000;
+        g_world = world; g_character = character; g_generation = generation;
+        g_discoverAt = now - 1000; g_catalogueAt = now;
+        g_catalogueComplete = g_catalogueLogged = false;
         if (character) catalogue(character);
     }
     const auto incoming = net::takeAudio();
+    g_received += incoming.size();
     const auto settings = config::get();
     if (!world || !character || !net::running()) { clearSounds(); return; }
+    // Prefabs/waves may not be bound on the first client update after spawning.
+    // Retry an incomplete catalogue, then discover loops which already started.
+    if (!g_catalogueComplete && now - g_catalogueAt >= 2000) { g_catalogueAt = now; catalogue(character); }
     if (now - g_discoverAt >= 1000) { discoverActiveSounds(); g_discoverAt = now; }
     std::deque<Captured> captured;
     std::array<Source, net::kPlayerAudioSourceCount> sources;
@@ -320,7 +330,7 @@ void tick() {
         std::lock_guard<std::mutex> lock(g_mutex); captured.swap(g_captured); sources = g_sources;
         voiceRealm = g_voiceRealm; haveVoiceRealm = g_haveVoiceRealm;
     }
-    for (const auto& c : captured) if (now - c.at < 500) net::publishAudio(c.sample);
+    for (const auto& c : captured) if (now - c.at <= net::kPlayerAudioMaxAgeMs) net::publishAudio(c.sample);
     // Continuous inputs (speed, material) and a heartbeat for active graphs.
     for (size_t i = 0; i < net::kPlayerSoundCount; ++i) {
         auto& s = sources[i];
@@ -366,12 +376,12 @@ void tick() {
     }
     std::vector<net::RemoteAudio> due;
     for (auto it = g_pending.begin(); it != g_pending.end();) {
-        if (now - it->receivedAt > 750) { it = g_pending.erase(it); continue; }
+        if (now - it->receivedAt > net::kPlayerAudioMaxAgeMs) { it = g_pending.erase(it); continue; }
         if (static_cast<int32_t>(now - it->playAt) < 0) { ++it; continue; }
         due.push_back(*it); it = g_pending.erase(it);
     }
     for (const auto& message : due) {
-        if (now - message.receivedAt > 500 || !net::validAudio(message.sample)) continue;
+        if (now - message.receivedAt > net::kPlayerAudioMaxAgeMs || !net::validAudio(message.sample)) continue;
         net::PlayerState state;
         if (!nearby(message.peer, state)) continue;
         const auto& sample = message.sample;
@@ -380,10 +390,9 @@ void tick() {
         const auto asset = source.asset;
         if (!asset) continue;
         if (!vocal) {
-            if (sourceIndex(asset) != sample.source || (sample.event && !graphKey(asset, 0x80, sample.event))) continue;
-            bool valid = true;
-            for (uint8_t i = 0; i < sample.count; ++i) valid &= graphKey(asset, 0x70, sample.params[i].key);
-            if (!valid) continue;
+            if (sourceIndex(asset) != sample.source || (sample.event && !graphKey(asset, 0x80, sample.event))) {
+                ++g_rejected; continue;
+            }
         }
         auto found = g_playing.find(message.peer);
         if (found == g_playing.end()) {
@@ -416,7 +425,10 @@ void tick() {
         }
         sound.heardAt = now;
         place(sound.instance, state);
-        for (uint8_t i = 0; i < sample.count; ++i)
+        // SoundEntity's property table also contains entity-only fields. Older
+        // clients sent those too; ignore them instead of dropping the footstep.
+        // Only graph-declared scalar inputs can ever reach the native setter.
+        for (uint8_t i = 0; i < sample.count; ++i) if (graphKey(asset, 0x70, sample.params[i].key))
             reinterpret_cast<void(*)(uintptr_t, uint32_t, float)>(gameVirtual(reinterpret_cast<void*>(sound.instance), 0x18))(
                 sound.instance, sample.params[i].key, sample.params[i].value);
         if (sample.event)
@@ -427,8 +439,13 @@ void tick() {
 }
 std::string status() {
     if (!g_installed) return "Native player sound hook unavailable";
-    return "Captured " + std::to_string(g_captures.load()) + ", played " + std::to_string(g_played.load()) +
+    return "Captured " + std::to_string(g_captures.load()) + ", received " + std::to_string(g_received.load()) +
+           ", played " + std::to_string(g_played.load()) + ", rejected " + std::to_string(g_rejected.load()) +
            " (vocals " + std::to_string(g_vocalCaptures.load()) + "/" + std::to_string(g_vocalPlayed.load()) + ")" +
            (g_vocalsInstalled ? "" : " - vocal hook unavailable");
+}
+uintptr_t spatialVoiceTemplate() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_sources[8].asset; // PipeRelease: one sampler and one native cone output
 }
 }

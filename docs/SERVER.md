@@ -8,6 +8,11 @@ it is the mod's own UDP protocol on its own port.
 A player who hosts from the menu is still the easiest way for a group of friends. A server is for a
 session that is always there.
 
+Proximity microphone chat uses the same UDP port. Use the updated server binary
+to forward voice packet type 16; clients enable it in Players → Proximity chat.
+Voice has a separate fixed-size rate budget, so it does not consume the ordinary
+movement/event allowance. The server does not record speech or require Steam.
+
 ## Run it
 
 Windows: `mecmp_server.exe`. Linux: build it (below) and run `./mecmp_server`.

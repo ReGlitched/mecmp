@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 // A ray cast into the game's physics world, with the call the game's own ray cast entities make
 // (ServerRaycastEntity: 0x143a204b0 builds a query per entity and calls the caster below).
 //
@@ -16,5 +17,8 @@ struct Hit {
 bool available();
 // True if something lies on the segment from..to; `out` is the nearest hit. False between levels.
 bool cast(const float from[3], const float to[3], Hit& out);
+// Camera obstruction: excludes native character physics bodies, including Faith's own capsule.
+// Uses the native query's body-id exclusion list; solid scenery still counts at any distance.
+bool castCamera(const float from[3], const float to[3], Hit& out, uint32_t ownBodyId = ~0u);
 
 } // namespace mecmp::game::raycast

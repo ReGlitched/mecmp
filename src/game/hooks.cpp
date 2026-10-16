@@ -5,8 +5,10 @@
 #include "game/players_map.h"
 #include "game/runs.h"
 #include "game/engine.h"
+#include "game/collision.h"
 #include "game/ghosts.h"
 #include "game/player_audio.h"
+#include "game/native_voice.h"
 #include "game/level.h"
 #include "game/models.h"
 #include "net/net.h"
@@ -75,7 +77,9 @@ void updateAllHook(void* self, void* info) {
     runs::clientTick(); // cheap once registered
     ghosts::beforeClientReplayUpdate();
     g_origUpdateAll(self, info);
+    collision::clientTick();
     player_audio::tick();
+    native_voice::clientTick();
 }
 
 // Swaps the updateAll slot of the updater vtable. Both updater objects share that vtable, so one

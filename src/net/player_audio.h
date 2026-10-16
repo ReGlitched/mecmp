@@ -49,10 +49,14 @@ constexpr size_t kPlayerAudioSourceCount = kPlayerSoundCount + kPlayerVocalCount
 static_assert(kPlayerAudioSourceCount <= 256, "audio source indices fit in one byte");
 constexpr uint32_t kVocalTrigger = 0x9b59cebd, kVocalCancel = 0xa1e48be3;
 constexpr int kMaxPlayerAudioPerSecond = 64;
+constexpr uint32_t kPlayerAudioMaxAgeMs = 500, kPlayerAudioMaxDelayMs = 250;
+static_assert(kPlayerAudioMaxDelayMs < kPlayerAudioMaxAgeMs, "Audio scheduling must leave playback headroom");
 constexpr bool vocalSource(uint8_t source) { return source >= kPlayerSoundCount && source < kPlayerAudioSourceCount; }
 constexpr size_t kMaxAudioParams = 16;
 struct AudioParam { uint32_t key = 0; float value = 0; };
 struct PlayerAudio {
+    // Before publishAudio, timeMs is GetTickCount at capture; on the wire it
+    // is translated to the sender's pose-recorder clock.
     uint32_t id = 0, timeMs = 0, event = 0;
     uint8_t source = 0, count = 0;
     AudioParam params[kMaxAudioParams];

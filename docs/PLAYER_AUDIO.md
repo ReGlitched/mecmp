@@ -13,13 +13,13 @@ capture and sending still run, so a player who turns it on hears the others. Def
 ```ini
 [audio]
 player_sounds=0
-distance=80
+distance=40
 ```
 
 This is native game sound playback: footsteps and hand contacts, cloth movement,
 pipe/ladder/bar movement, landings, breathing, effort grunts, punches, kicks,
-combat impacts, damage and near-miss sounds. Microphone voice chat remains the
-existing Mumble option.
+combat impacts, damage and near-miss sounds. Microphone speech uses the separate
+[native proximity chat](PROXIMITY_VOICE.md) feature; optional Mumble Link remains available.
 
 The allowlist contains 25 sound graphs and 15 effort conversations from the local
 character's `Sound/Logic/Faith_Movement_Audio`, `Sound/Logic/Faith_Combat_Audio`,
@@ -45,6 +45,19 @@ Each playback owns stable conversation-info storage; cancellation retains that
 storage until the native pending queue and active handle tree release it.
 
 The client replay updater consumes received events on the pose playback clock.
+Capture age and pose publication both use GetTickCount. Outgoing events map
+directly onto the most recent pose-recorder timestamp, preserving event age
+without combining two wall clocks. The receiver keeps the earlier bounded
+arrival-delay fallback for legacy clock drift or a sound arriving before its
+first pose. Future scheduling is capped at 250 ms, below the shared 500 ms expiry,
+so an event cannot age out merely by waiting for its scheduled playback.
+An incomplete local sound catalogue retries every two seconds, and the active
+entity list discovers loops which started before that catalogue was ready.
+Changing multiplayer sessions clears retained sound instances and pending events.
+
+Captures include only declared
+graph inputs. Extra entity-only fields from older clients are ignored, without
+discarding a valid footstep or allowing unknown native inputs.
 It creates a separate native sound instance for each remote player/source, applies
 only inputs declared by the locally loaded graph, and updates its native world
 transform from that player's bounded pose. Sound graph instances stop after two
@@ -57,6 +70,7 @@ The host validates audio packet structure before relaying. Receiving clients als
 validate graph events and scalar input hashes against their own movement assets.
 Older DLLs ignore the optional type 15 packet. An older dedicated server will not
 relay it; update that server for sound.
+The Players tab shows captured, received, played and rejected graph-event counts.
 
 ## Bone protections
 

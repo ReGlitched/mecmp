@@ -34,6 +34,7 @@
 #include "ui/notices.h"
 #include "ui/radial.h"
 #include "ui/summon.h"
+#include "ui/voice.h"
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
@@ -61,6 +62,7 @@ std::atomic<int> g_chatKey{'T'};
 std::atomic<int> g_pingKey{0}; // 0 = none
 std::atomic<int> g_reactKey{0}; // the quick answers key; 0 = none
 std::atomic<int> g_playersKey{0}; // the players panel key; 0 = none
+std::atomic<int> g_voiceKey{0};
 std::atomic<int> g_altKey{0}, g_hideKey{0}, g_prevKey{0}, g_nextKey{0}; // the other keys; 0 = none
 std::atomic<int> g_summonAcceptKey{0}, g_summonDeclineKey{0}; // answering a summon (ui/summon.h); 0 = none
 std::atomic<bool> g_hidden{false};       // the overlay is hidden (see overlayHidden)
@@ -639,6 +641,7 @@ HRESULT STDMETHODCALLTYPE presentHook(IDXGISwapChain* sc, UINT sync, UINT flags)
         }
         nametags::draw();
         markers::draw();
+        voice::draw();
         radial::draw();
         drawHiddenNote();
         if (const float a = game::teleport::fadeAlpha(); a > 0.f) // "Go to": the game's teleport behind a fade
@@ -703,7 +706,7 @@ namespace {
 // Every key the mod listens to besides the menu key. A key does one job.
 std::atomic<int>* const kBound[] = {&g_pingKey, &g_pingClearKey, &g_chatKey, &g_reactKey, &g_altKey,
                                     &g_hideKey, &g_prevKey,      &g_nextKey, &g_summonAcceptKey,
-                                    &g_summonDeclineKey, &g_playersKey};
+                                    &g_summonDeclineKey, &g_playersKey, &g_voiceKey};
 
 // A key name from mecmp.ini. `mouse`: false = the keyboard only, true = also MOUSE3 (the middle
 // button), MOUSE4 and MOUSE5 (the side buttons).
@@ -764,6 +767,11 @@ bool setWheelNextKey(const std::string& name) { return setBind(g_nextKey, name, 
 bool setSummonAcceptKey(const std::string& name) { return setBind(g_summonAcceptKey, name, true); }
 bool setSummonDeclineKey(const std::string& name) { return setBind(g_summonDeclineKey, name, true); }
 bool setPlayersKey(const std::string& name) { return setBind(g_playersKey, name, true); }
+bool setVoiceKey(const std::string& name) { return setBind(g_voiceKey, name, true); }
+bool voiceKeyHeld() {
+    const int key = g_voiceKey.load();
+    return key && !g_keyCapture && (GetAsyncKeyState(key) & 0x8000) != 0;
+}
 
 bool middleButtonIsABind() {
     for (const std::atomic<int>* k : kBound)
@@ -816,11 +824,13 @@ bool install() {
     noteRefused(setSummonAcceptKey(config::get()->summonAcceptKey), "summon_accept_key", config::get()->summonAcceptKey);
     noteRefused(setSummonDeclineKey(config::get()->summonDeclineKey), "summon_decline_key", config::get()->summonDeclineKey);
     noteRefused(setPlayersKey(config::get()->playersKey), "players_key", config::get()->playersKey);
+    noteRefused(setVoiceKey(config::get()->voiceKey), "talk_key", config::get()->voiceKey);
     // Gamepad combinations: the menu's first, so it wins over an identical one.
     setPadBinding(config::get()->menuPad, gamepad::Action::Menu, "menu_pad");
     setPadBinding(config::get()->pingPad, gamepad::Action::Ping, "ping_pad");
     setPadBinding(config::get()->pingClearPad, gamepad::Action::PingClear, "ping_clear_pad");
     setPadBinding(config::get()->reactPad, gamepad::Action::React, "react_pad");
+    setPadBinding(config::get()->voicePad, gamepad::Action::Voice, "talk_pad");
     setPadBinding(config::get()->summonAcceptPad, gamepad::Action::SummonAccept, "summon_accept_pad");
     setPadBinding(config::get()->summonDeclinePad, gamepad::Action::SummonDecline, "summon_decline_pad");
     setPadBinding(config::get()->playersPad, gamepad::Action::Players, "players_pad");
