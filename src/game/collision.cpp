@@ -44,7 +44,7 @@ struct CapsuleDescription {
     float mass = 0;
     uint32_t reservedC = 0, reserved10 = 0, kind = 2, quality = 0;
     uint32_t layer = 1; // StaticLayer: solid to Faith's native world movement queries.
-    float radius = kRadius, height = 0; // separation of the capsule's sphere centres
+    float radius = kRadius, height = 0;
 };
 static_assert(sizeof(CapsuleDescription) == 0x28 && offsetof(CapsuleDescription, kind) == 0x14 &&
               offsetof(CapsuleDescription, radius) == 0x20 && offsetof(CapsuleDescription, height) == 0x24,
@@ -234,6 +234,8 @@ void clientTick() {
             b.peer = peer.id; b.crouched = peer.crouched; b.wanted = true;
             const auto previous = b.transform;
             b.transform = transformFromYaw(state.pos, 0);
+            b.transform.right[0] = 0.f; b.transform.right[1] = 1.f;
+            b.transform.up[0] = -1.f; b.transform.up[1] = 0.f;
             b.transform.trans[1] += (b.crouched ? kCrouchHeight : kStandingHeight) * .5f;
             if (!b.object) {
                 if (!b.retryAt || now - b.retryAt >= 1000) {
