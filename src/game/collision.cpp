@@ -19,37 +19,39 @@ namespace mecmp::game::collision {
 namespace {
 constexpr uintptr_t kCapsuleType = 0x1427bd350, kMoveTrackerType = 0x142853420;
 constexpr uintptr_t kClientContext = 0x142401ca0, kFactoryType = 0x142831670;
-constexpr uintptr_t kCapsuleDescription = 0x141a71d40, kRigidBodyVtable = 0x141bac160;
+constexpr uintptr_t kRigidBodyVtable = 0x141bac160;
 constexpr uintptr_t kCreationInfo = 0x142d4d1a0, kFindFactory = 0x143506830, kCreateBody = 0x1435169e0;
 constexpr uintptr_t kSetTransform = 0x1434f8930, kSetTransformSource = 0x1434f6d90;
 constexpr uintptr_t kEnable = 0x1434e90f0, kAddSpatial = 0x1434e9270;
 constexpr uintptr_t kRemoveSpatial = 0x1434f6610, kDisable = 0x1434f65f0, kDestroy = 0x1434f5550;
-// Fixed Faith-sized reference profile in world metres. Animation and render
-// bounds never affect this geometry. Total height includes both hemispheres.
+// Fixed Faith-sized box profile in world metres. Animation, bones and render
+// bounds never affect this geometry. The box follows only position, yaw and crouch.
 constexpr float kModelScale = 1.f;
-constexpr float kRadius = .22f * kModelScale;
+constexpr float kHalfWidth = .22f * kModelScale, kHalfDepth = .22f * kModelScale;
 constexpr float kStandingHeight = 1.70f * kModelScale, kCrouchHeight = 1.00f * kModelScale;
-static_assert(kRadius > 0 && kStandingHeight > 2 * kRadius && kCrouchHeight > 2 * kRadius);
+static_assert(kHalfWidth > 0 && kHalfDepth > 0 && kStandingHeight > 0 && kCrouchHeight > 0);
 constexpr DWORD kPeerAge = 300, kPhysicalAge = 1300;
 std::atomic<bool> g_ready{false};
 std::atomic<uintptr_t> g_client{0};
 std::atomic<DWORD> g_clientAt{0};
 std::atomic<uint32_t> g_bodies{0};
 
-// Exact description from ClientCapsuleCollisionComponent::enable (142d4f920).
-// Creates a Havok capsule and registered fb::RigidBody. Kind 2 is the native
-// character-collision body path with zero mass; the network drives its transform.
-struct CapsuleDescription {
-    uintptr_t vtable = 0;
+// PhysicsEntityFactory reads shape type 1 synchronously to construct a native
+// Havok box (143516562 -> 143f2f140). The shared body fields retain the same
+// zero-mass body kind and StaticLayer used by native character collision.
+uint32_t boxType(const void*) { return 1; }
+const uintptr_t kBoxVtable[] = {reinterpret_cast<uintptr_t>(&boxType)};
+struct alignas(16) BoxDescription {
+    const uintptr_t* vtable = kBoxVtable;
     float mass = 0;
     uint32_t reservedC = 0, reserved10 = 0, kind = 2, quality = 0;
-    uint32_t layer = 1; // StaticLayer: solid to Faith's native world movement queries.
-    float radius = kRadius, height = 0;
+    uint32_t layer = 1;
+    float halfExtents[4]{};
 };
-static_assert(sizeof(CapsuleDescription) == 0x28 && offsetof(CapsuleDescription, kind) == 0x14 &&
-              offsetof(CapsuleDescription, radius) == 0x20 && offsetof(CapsuleDescription, height) == 0x24,
-              "Native capsule description");
-struct Body {
+static_assert(sizeof(BoxDescription) == 0x30 && alignof(BoxDescription) == 16 &&
+              offsetof(BoxDescription, kind) == 0x14 && offsetof(BoxDescription, halfExtents) == 0x20,
+              "Native box description");
+struct alignas(16) Body {
     uint32_t peer = 0, id = ~0u;
     uintptr_t object = 0, owner = 0, manager = 0;
     bool crouched = false, wanted = false;
@@ -79,7 +81,13 @@ bool callAt(uintptr_t caller, uintptr_t target) {
 }
 bool layoutMatches() {
     uintptr_t fn = 0;
-    return mem::read(rva(kCapsuleDescription), fn) && fn == rva(0x142ba3d90) &&
+    // Verify the box constructor branch in addition to the shared body lifecycle.
+    const uint8_t shapeCheck[] = {0x83, 0xf8, 0x01}; // cmp eax, 1
+    const uint8_t extentsLoad[] = {0x0f, 0x28, 0x4f, 0x20}; // movaps xmm1, [rdi+20h]
+    uint8_t check[sizeof(shapeCheck)]{}, load[sizeof(extentsLoad)]{};
+    return mem::read(rva(0x143516532), check, sizeof(check)) && !std::memcmp(check, shapeCheck, sizeof(check)) &&
+        mem::read(rva(0x14351653a), load, sizeof(load)) && !std::memcmp(load, extentsLoad, sizeof(load)) &&
+        callAt(0x143516562, 0x143f2f140) &&
         mem::read(rva(kRigidBodyVtable) + 0x178, fn) && fn == rva(0x1434f21e0) &&
         mem::read(rva(kRigidBodyVtable) + 0x250, fn) && fn == rva(0x1434f17d0) &&
         callAt(0x142d4f9e1, kCreationInfo) && callAt(0x142d4f9f8, kFindFactory) &&
@@ -136,11 +144,12 @@ bool create(Body& b, uintptr_t owner, uintptr_t rigidData, uintptr_t manager) {
     alignas(16) uint8_t info[0xe0]{};
     reinterpret_cast<void* (*)(void*, uintptr_t, uint32_t, uintptr_t, uintptr_t)>(rva(kCreationInfo))
         (info, bus, 0, manager, 0);
-    CapsuleDescription description;
-    description.vtable = rva(kCapsuleDescription);
-    description.height = (b.crouched ? kCrouchHeight : kStandingHeight) - 2 * kRadius;
+    BoxDescription description;
+    description.halfExtents[0] = kHalfWidth;
+    description.halfExtents[1] = (b.crouched ? kCrouchHeight : kStandingHeight) * .5f;
+    description.halfExtents[2] = kHalfDepth;
     uint32_t id = ~0u;
-    reinterpret_cast<uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, const CapsuleDescription*)>(rva(kCreateBody))
+    reinterpret_cast<uint32_t* (*)(uintptr_t, uint32_t*, void*, uintptr_t, const BoxDescription*)>(rva(kCreateBody))
         (factory, &id, info, rigidData, &description);
     const auto object = id != ~0u ? bodyObject(manager, id) : 0;
     if (!object) return false;
@@ -155,8 +164,32 @@ bool create(Body& b, uintptr_t owner, uintptr_t rigidData, uintptr_t manager) {
     move(b);
     reinterpret_cast<BodyFn>(rva(kEnable))(manager, &b.id);
     reinterpret_cast<BodyFn>(rva(kAddSpatial))(manager, &b.id);
-    VLOG("collision: native capsule %08x for peer %08x (%s)", id, b.peer, b.crouched ? "crouched" : "standing");
+    VLOG("collision: native box %08x for peer %08x (%s)", id, b.peer, b.crouched ? "crouched" : "standing");
     return true;
+}
+void updateBody(Body& b, uint32_t peer, uintptr_t owner, bool crouched, const float* position, float yaw,
+                uintptr_t rigidData, uintptr_t manager, DWORD now) {
+    if (b.object && (b.owner != owner || b.crouched != crouched || b.manager != manager || !ours(b))) remove(b);
+    b.peer = peer; b.crouched = crouched; b.wanted = true;
+    const auto previous = b.transform;
+    b.transform = transformFromYaw(position, yaw);
+    // Box half-extents use ordinary XYZ axes; keep Y upright and feet anchored.
+    b.transform.trans[1] += (crouched ? kCrouchHeight : kStandingHeight) * .5f;
+    if (!b.object) {
+        if (!b.retryAt || now - b.retryAt >= 1000) {
+            b.retryAt = now;
+            create(b, owner, rigidData, manager);
+        }
+    } else {
+        float delta2 = 0;
+        for (int i = 0; i < 3; ++i) {
+            const float d = b.transform.trans[i] - previous.trans[i];
+            const float r = b.transform.right[i] - previous.right[i];
+            const float f = b.transform.forward[i] - previous.forward[i];
+            delta2 += d * d + r * r + f * f;
+        }
+        if (delta2 > .0000001f) move(b);
+    }
 }
 } // namespace
 
@@ -164,11 +197,12 @@ bool available() { return g_ready.load(); }
 uint32_t bodyCount() { return g_bodies.load(); }
 void install() {
     g_ready = layoutMatches();
-    MLOG("collision: native fixed capsule factory %s", available() ? "available" : "unavailable");
+    MLOG("collision: native fixed box factory %s", available() ? "available" : "unavailable");
 }
 void tick() {
     const auto cfg = config::get();
-    void* client = cfg->playerCollision && level::serverWorld() && !level::inFrontEnd()
+    const bool wanted = cfg->playerCollision;
+    void* client = wanted && level::serverWorld() && !level::inFrontEnd()
         ? reinterpret_cast<void* (*)()>(rva(Fn_LocalClientCharacter))() : nullptr;
     int state = -1;
     void* tracker = client ? getComponent(client, kMoveTrackerType) : nullptr;
@@ -200,10 +234,11 @@ void clientTick() {
     }
     const auto cfg = config::get();
     const auto client = g_client.load();
-    const bool enabled = shared && cfg->playerCollision && net::running() &&
-        (net::hosting() || net::connectedToHost()) && level::serverWorld() && !level::inFrontEnd() &&
+    const bool enabled = shared && level::serverWorld() && !level::inFrontEnd() &&
         !teleport::busy() && !hooks::gameMenuOpen() && client && now - g_clientAt.load() <= 150 &&
         reinterpret_cast<uintptr_t>(reinterpret_cast<void* (*)()>(rva(Fn_LocalClientCharacter))()) == client;
+    const bool remoteEnabled = enabled && cfg->playerCollision && net::running() &&
+        (net::hosting() || net::connectedToHost());
     uintptr_t rigidData = 0, manager = 0;
     LinearTransform local{};
     if (enabled && readEntityTransform(reinterpret_cast<void*>(client), local) && finite3(local.trans)) {
@@ -214,14 +249,14 @@ void clientTick() {
         const auto index = rigidData ? mem::readOr<uint8_t>(rigidData + 0x2a, 0xff) : 0xff;
         manager = index != 0xff ? worldManager(shared, index) : 0;
     }
-    if (manager && rigidData) {
+    if (manager && rigidData && remoteEnabled) {
         for (const auto& peer : net::remotes(kPeerAge)) {
             if (peer.loopback || !peer.collision || peer.physicalAgeMs > kPhysicalAge) continue;
             const auto owner = ghosts::clientCharacter(peer.id);
             net::PlayerState state;
             uint32_t age = 0;
             if (!owner || !net::remoteState(peer.id, state, age) || age > kPeerAge ||
-                !(state.flags & net::kStateInLevel) || !finite3(state.pos)) continue;
+                !(state.flags & net::kStateInLevel) || !finite3(state.pos) || !std::isfinite(state.yaw)) continue;
             float distance2 = 0;
             for (int i = 0; i < 3; ++i) { const float d = state.pos[i] - local.trans[i]; distance2 += d * d; }
             if (distance2 > 80.f * 80.f) continue;
@@ -229,24 +264,7 @@ void clientTick() {
             for (auto& b : g_slots) if (b.peer == peer.id) { body = &b; break; }
             if (!body) for (auto& b : g_slots) if (!b.peer) { body = &b; break; }
             if (!body) continue;
-            auto& b = *body;
-            if (b.object && (b.owner != owner || b.crouched != peer.crouched || b.manager != manager || !ours(b))) remove(b);
-            b.peer = peer.id; b.crouched = peer.crouched; b.wanted = true;
-            const auto previous = b.transform;
-            b.transform = transformFromYaw(state.pos, 0);
-            b.transform.right[0] = 0.f; b.transform.right[1] = 1.f;
-            b.transform.up[0] = -1.f; b.transform.up[1] = 0.f;
-            b.transform.trans[1] += (b.crouched ? kCrouchHeight : kStandingHeight) * .5f;
-            if (!b.object) {
-                if (!b.retryAt || now - b.retryAt >= 1000) {
-                    b.retryAt = now;
-                    create(b, owner, rigidData, manager);
-                }
-            } else {
-                float delta2 = 0;
-                for (int i = 0; i < 3; ++i) { const float d = b.transform.trans[i] - previous.trans[i]; delta2 += d * d; }
-                if (delta2 > .0000001f) move(b);
-            }
+            updateBody(*body, peer.id, owner, peer.crouched, state.pos, state.yaw, rigidData, manager, now);
         }
     }
     uint32_t count = 0;

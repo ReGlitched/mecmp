@@ -9,7 +9,10 @@ A player who hosts from the menu is still the easiest way for a group of friends
 session that is always there.
 
 Proximity microphone chat uses the same UDP port. Use the updated server binary
-to forward voice packet type 16; clients enable it in Players → Proximity chat.
+and restart it to forward 16 kHz mono mu-law voice packet type 16; clients enable
+it in Players → Proximity chat. Type 17 (48 kHz/16-bit PCM) is no longer accepted.
+Update all clients too; the lower-bandwidth format uses about 17.2 kB/s per speaker
+before UDP/IP headers.
 Voice has a separate fixed-size rate budget, so it does not consume the ordinary
 movement/event allowance. The server does not record speech or require Steam.
 

@@ -73,14 +73,21 @@ Under **You → Gameplay**, **Third person** follows Faith from behind with an a
 camera distance and left/right and up/down offsets. Walls retract the camera. It returns to the normal camera in game menus
 and when the view detaches from Faith.
 
-**Player collision** creates native Havok capsules with fixed Faith-sized dimensions for nearby
-runners when both have enabled it. The game resolves contacts; collision does not write
-your position or velocity. Springboarding uses the game's controller and normal obstacle
-queries against those capsules, with no separate toggle or springboard hook.
+**Player collision** creates native Havok boxes with fixed Faith-sized dimensions for nearby
+runners when both have enabled it. Each box is 0.44 m wide and deep, with a flat top at
+1.70 m standing or 1.00 m crouched. It follows the runner's position and yaw. The game
+resolves contacts; collision does not write your position or velocity.
 Third person and collision start off; settings
 are saved in `[third_person]` and `[collision]` in `mecmp.ini`.
 Both clients need this version for collision; the existing protocol-7 relay can stay in use.
 See [docs/PLAYER_OPTIONS.md](docs/PLAYER_OPTIONS.md) for implementation details and limits.
+
+## Voice quality
+
+Proximity chat uses 16 kHz mono mu-law speech, with peak limiting to keep louder
+speech from hard-clipping. The corrected native spatial/reverb routing stays in place.
+Update all player DLLs and restart the updated dedicated server for this voice format.
+Voice uses about 17.2 kB/s per active speaker before UDP/IP headers.
 
 ## Player game sounds
 

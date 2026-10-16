@@ -1,5 +1,6 @@
 #include "game/ghosts.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
@@ -677,7 +678,6 @@ void renderFrame() {
     }
 }
 void setEnabled(bool enabled) { g_enabled = enabled; }
-
 namespace {
 // A remote player that is present now (packets newer than kHideAfterMs).
 struct Present { uint32_t id; std::string name; uint32_t ageMs; uint32_t look; uint8_t outfit; };
@@ -785,10 +785,10 @@ void tick(uint64_t tick, uint64_t ticksInLevel) {
     // Every present player needs a ghost: hand them a free one, else spawn (one per kSpawnGapMs).
     // Never in the main menu: its "Your Echo" preview is spawned from a projection spawner there, and a
     // ghost of ours from it took the preview's place (and its look).
-    const bool canSpawn = g_enabled && !g_paused && config::get()->autoSpawn && ticksInLevel >= kSettleTicks &&
+    const bool canSpawn = g_enabled && !g_paused && ticksInLevel >= kSettleTicks &&
                           !level::inFrontEnd() &&
                           level::spawnerAlive(level::ghostSpawner()) && playerSettled;
-    if (canSpawn) {
+    if (canSpawn && config::get()->autoSpawn) {
         level::BoneSetup ref;
         for (const auto& p : players) {
             if (p.ageMs > kFreshMs) continue;

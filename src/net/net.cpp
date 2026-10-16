@@ -1730,7 +1730,7 @@ void publishVoice(const VoiceFrame& frame, uint32_t generation) {
     if (!frame.stream) return;
     std::lock_guard<std::mutex> lock(g_m);
     if (!g_run || generation != g_generation.load()) return;
-    if (g_voiceOut.size() >= 6) g_voiceOut.pop_front();
+    if (g_voiceOut.size() >= kVoiceCaptureFrames) g_voiceOut.pop_front();
     g_voiceOut.push_back({frame, GetTickCount()});
 }
 std::vector<RemoteVoice> takeVoice() {

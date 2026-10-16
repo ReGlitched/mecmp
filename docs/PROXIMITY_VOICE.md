@@ -14,15 +14,17 @@ While playing, a corner indicator shows transmitting microphone level and nearby
 players who are speaking. It follows the overlay hide setting.
 
 The microphone starts only while transmission is requested, proximity chat is
-enabled and multiplayer/free roam are active. Capture and transport can continue
-while the local native playback source is initializing.
+enabled and free roam is active with a multiplayer session.
+Capture and transport can continue while the local
+native playback source is initializing.
 Menus, text chat and loss of game focus stop capture and discard partial speech.
 Open microphone is off by default. Speech is never written to disk or monitored
-back to the speaker. Steam, Steam authentication, Mumble and EA matchmaking are
-not involved; MECMP's existing custom player names identify speakers.
+back to the speaker. Steam,
+Steam authentication, Mumble and EA matchmaking are not involved; MECMP's existing custom player names identify speakers.
 
 Use the updated DLL on all clients. A dedicated server also needs the updated
-`mecmp_server.exe`; old servers do not forward voice. Player-hosted sessions use
+`mecmp_server.exe` and a restart. This build uses 16 kHz mono mu-law voice on
+packet type 16. Type 17 (48 kHz/16-bit PCM) is incompatible and ignored. Player-hosted sessions use
 the same implementation directly in the updated DLL. Existing movement sounds,
 effort vocals and combat audio remain separate from microphone speech.
 
@@ -44,25 +46,32 @@ microphone_gain=1
 
 `game/voice_chat.cpp` owns WASAPI shared-mode microphone capture on its own COM
 thread. Windows converts the input to 16 kHz, mono, signed 16-bit PCM. Twenty
-milliseconds (320 samples) form one independent mu-law block; `net/voice.h`
-contains the bounded format and codec. There is no external codec/runtime DLL.
+milliseconds (320 samples) form one independent block, companded to 320 bytes
+with the built-in mu-law encoder in `net/voice.h`. There is no external codec or
+runtime DLL. Capture gain is applied in float and peak-limited before companding,
+avoiding software hard clipping when microphone gain is raised. The lower speech
+bandwidth retains the corrected native spatial and reverb-only send routing.
 
 Optional protocol-7 packet type 16 contains `u32 stream | u32 sequence | 320 bytes`.
-Player movement audio uses type 15; rendezvous hole punching uses type 14.
-Including the ordinary 16-byte header, every packet is 344 bytes. Speech has its
-own sequence space and is sent once, every 20 ms, without retransmission or UDP
-fragmentation. It does not advance movement's sequence/loss counter. Hosts and
-dedicated servers validate the exact size and nonzero stream ID, accept voice
-only from admitted members under their bound session ID, and enforce a separate
-55 packets/second bucket with a 12-packet burst. The ordinary movement/event
-limit is unchanged. Application traffic is about 17.2 kB/s per active speaker.
+Type 17 PCM voice is retired. Player movement audio uses type 15;
+rendezvous hole punching uses type 14. Including the ordinary 16-byte header,
+every voice packet is 344 bytes, within the existing 1024-byte transport limit.
+Speech has its own sequence space and is sent once, every 20 ms, without
+retransmission or UDP fragmentation. It does not advance movement's sequence/loss
+counter. Hosts and dedicated servers validate the exact size and nonzero stream ID,
+accept voice only from admitted members under their bound session ID, and enforce
+a separate 55 packets/second bucket with a 6-packet burst (120 ms). The ordinary
+movement/event limit is unchanged. Companded audio is 128 kb/s; application traffic
+is about 17.2 kB/s per active speaker before UDP/IP headers, down from 98.4 kB/s
+for the previous PCM format.
 
-Outgoing queues retain at most six blocks and discard anything over 120 ms old.
+Outgoing queues retain at most 6 blocks and discard anything over 120 ms old.
 The shared receive queue is bounded to 128 packets; playback drops stale packets
-and accepts at most 15 speakers. Each speaker has a fixed 16-block jitter window,
-a 60 ms initial delay, sequence-based reordering/deduplication and silence for
-missing blocks. Streams, partial microphone buffers and playback clear across
-session/level changes and when voice is disabled. An idle source expires at 300 ms.
+and accepts at most 15 remote speakers.
+Each speaker has a fixed 16-block jitter window (320 ms), a 60 ms initial delay,
+sequence-based reordering/deduplication and silence for missing blocks. Streams,
+partial microphone buffers and playback clear across session/level changes and
+when voice is disabled. An idle source expires at 300 ms.
 
 `game/native_voice.cpp` feeds decoded speech into a separate **native spatial
 sound instance for each speaker**, before Catalyst's low-pass, panning, mixer sends
@@ -72,9 +81,29 @@ only observes the current device sample rate and mixer heartbeat.
 The native source uses a private copy of Faith's simple PipeRelease sound graph:
 one sampler and one cone output. The output transform source changes from
 **Listener** to **Sound**, so it follows the remote runner's mouth position.
-Obstruction/occlusion high-frequency damping is enabled, along with the existing
-native reverb send. The engine owns positional mixing, environmental queries,
-filtering and reverb. The effect depends on the level's authored acoustic data.
+The private cone also disables the template's near-listener bleed: its native
+panner radius is `(max(distance, min) - min) / (max - min)`, and a radius of at
+least one selects fully positional panning. `BleedMinDistance=-1` and
+`BleedMaxDistance=0` keep that radius at least one even at zero distance, without
+dividing by zero. The template previously used `[-1, 0.1]`, which allowed a
+listener-centered contribution at very close range. `PanSize=0` selects a point
+source; center and LFE levels are explicitly disconnected zero constants. This
+applies to remote speech. These settings affect only the private voice graph,
+not Faith's original sounds.
+Obstruction/occlusion high-frequency damping stays enabled. The environmental
+send now targets the master's two-channel **Reverb** bus, which feeds the native
+room impulse-response processor. The pipe template instead targeted **Reverb &
+EarlyReflections**, which splits unpanned speech between that processor and a
+separate reflection branch. That extra branch could leave faint, clear speech
+in the opposite ear even when the direct mouth-position panner gave that side
+zero gain. Near-listener bleed changes could not remove this far-field route.
+
+Both the private cone's `ReverbSend` pointer and its compiled `Send0` connection
+context are retargeted; changing the pointer alone does not change the compiled
+send's bus binding. The eight-channel **GameMixMain** positional send stays intact.
+The master asset, bus nodes and all other game sounds remain untouched. Room
+reverb can still reach both ears as environmental reflections; there is no added
+local microphone monitor. The effect depends on the level's authored acoustic data.
 
 The copied sampler uses an unconnected unity-amplitude input. Muting that input
 would also mute injected speech downstream. Its native output voice stays scheduled
@@ -95,7 +124,7 @@ The Sub0 callback at `0x1420fddc8` is not the sampler PCM output and is left
 untouched. Unsupported voice layouts prevent template creation, and a
 failed output-buffer replacement for an owned source drops the block instead
 of returning the pipe sample. All other instances use the original callback unchanged.
-There is no external playback device, synthetic echo, wall raycast filter or
+There is no external playback device, wall raycast filter or
 replacement of an existing player's sound. Shared game assets stay untouched.
 
 MECMP applies the voice-volume setting with a 1.6 receive-gain multiplier,
@@ -104,11 +133,13 @@ new settings. Final receive gain is capped at 2, the native playback limit.
 The distance fade stays at full near gain within 2 metres, then follows
 `clamp((range - distance) / (range - 2), 0, 1)^1.5` and reaches silence at
 the selected hearing range. This falls off more strongly than the previous
-linear fade. A 5 ms gain ramp smooths changes. The native graph provides
-direction and environmental
-attenuation. The camera's third-person offset does not change MECMP's hearing
-range. PCM is resampled from 16 kHz to the native sampler's reported rate for its mono
-source buffer; the game handles final device channel layout and conversion.
+linear fade. A 5 ms gain ramp smooths changes. A block peak limiter uses
+immediate attack, an 80 ms release and a 0.98 ceiling after receive gain,
+preserving the waveform instead of hard-clipping loud speech. The native
+graph provides direction and environmental attenuation. The camera's
+third-person offset does not change MECMP's hearing range. PCM is resampled
+from 16 kHz to the native sampler's reported rate for its mono source buffer;
+the game handles final device channel layout and conversion.
 
 Native sound creation, mouth-position updates and stop/release run from the client
 replay updater. The audio callback uses fixed storage, makes no network calls or
@@ -141,8 +172,12 @@ Image VAs at base `0x140000000`:
 | Planar output buffer / frame count | mixer `+0xc490` / `+0xc4b8` |
 | Source rate / channel count | mixer `+0xc4bc` / `+0xc4c4` |
 | Output transform source | OutputNodeData `+0x54`: Sound=0, Listener=1 |
+| Point-source panning | ConeOutputNodeData `+0xc4` = 0; `+0xc8` = -1; `+0xcc` = 0 |
+| Extra center / LFE levels | ConeOutputNodeData `+0xd0` / `+0xd8`: disconnected zero AudioGraphNodePort values |
 | Obstruction / occlusion damping | OutputNodeData `+0x3c` / `+0x40`; factors set to 1 |
 | Reverb gain / native send | ConeOutputNodeData `+0xf8` / `+0x100`; attenuation curve at `+0xe8` stays intact |
+| Reverb-only bus discovery | ClientSoundSystem `+0x50` → AudioSystemAsset; `+0x18` → SoundMasterPatchAsset; `+0x20` → Busses; named `Reverb`, 2 channels |
+| Actual native send binding | Private SoundGraphData `+0x48` connections; retarget the old reverb bus context as well as ConeOutputNodeData `+0x100` |
 | Device heartbeat descriptor | `0x1420fa368` → `0x142dfad40`; does not mix speech |
 
 Read-only inspection confirmed native instances, descriptions, AudioCore VoiceRef

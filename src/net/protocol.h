@@ -41,6 +41,7 @@ constexpr uint16_t kTypeActivity = 10; // the run the sender is in now, with its
 constexpr uint16_t kTypeVisit = 13; // "may I come to you?" and its answer (see VISIT below)
 constexpr uint16_t kTypeAudio = 15; // native movement event + scalar inputs (player_audio.h)
 constexpr uint16_t kTypeVoice = 16; // u32 stream | u32 sequence | 320 mu-law speech samples
+// Type 17 was 48 kHz/16-bit PCM; leave it unused so incompatible audio is dropped.
 // 14 is RENDEZVOUS (below): not a session packet, so it is not in knownType.
 // type 5 INFO: a server list's question "who are you?" and a dedicated server's answer. Not a session
 // packet: it is not in knownType (never stored or forwarded), and a server answers it whatever the
@@ -83,6 +84,7 @@ struct Header {
 };
 #pragma pack(pop)
 static_assert(sizeof(Header) == 16, "header");
+static_assert(sizeof(Header) + kVoicePayloadBytes <= kMaxPacket, "voice must fit one transport packet");
 size_t writeAudio(char* buf, const Header& h, const PlayerAudio& sample);
 bool readAudio(const char* payload, size_t size, PlayerAudio& out);
 size_t writeVoice(char* buf, const Header& h, const VoiceFrame& frame);

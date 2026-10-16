@@ -6,11 +6,13 @@
 
 namespace mecmp::net {
 
-// One independent 20 ms block of 16 kHz mono speech, mu-law companded to 8 bits.
-// Fixed size, no fragmentation, native pointers, external codec or Steam dependency.
-constexpr unsigned kVoiceRate = 16000;
-constexpr size_t kVoiceSamples = 320;
-constexpr size_t kVoicePayloadBytes = 8 + kVoiceSamples;
+// Independent 20 ms blocks of 16 kHz mono speech, mu-law companded to 8 bits.
+// The 344-byte complete packet fits the existing 1024-byte transport buffer.
+constexpr unsigned kVoiceRate = 16000, kVoiceFrameMs = 20;
+constexpr size_t kVoiceSamples = kVoiceRate * kVoiceFrameMs / 1000;
+constexpr size_t kVoiceSampleBytes = kVoiceSamples * sizeof(uint8_t);
+constexpr size_t kVoicePayloadBytes = 8 + kVoiceSampleBytes;
+constexpr size_t kVoiceCaptureFrames = 120 / kVoiceFrameMs;
 struct VoiceFrame {
     uint32_t stream = 0, sequence = 0;
     std::array<uint8_t, kVoiceSamples> samples{};
@@ -32,14 +34,16 @@ inline int16_t decodeVoiceSample(uint8_t encoded) {
     return static_cast<int16_t>((value & 0x80) ? 132 - magnitude : magnitude - 132);
 }
 
-// Independent from the movement/event budget: at most ~19 KiB/s per sender.
-// A small burst permits normal UDP bunching without building a voice backlog.
+// Independent from movement/event traffic: 50 packets/s with 10% slack.
+// Keep the same 120 ms burst budget at the lower packet rate.
 struct VoiceBucket {
-    double tokens = 12;
+    static constexpr double kBurst = static_cast<double>(kVoiceCaptureFrames);
+    double tokens = kBurst;
     uint32_t at = 0;
     bool take(uint32_t now) {
-        const double refill = static_cast<uint32_t>(now - at) * 55.0 / 1000.0;
-        tokens = tokens + refill > 12.0 ? 12.0 : tokens + refill;
+        constexpr double rate = (1000.0 / kVoiceFrameMs) * 1.1;
+        const double refill = static_cast<uint32_t>(now - at) * rate / 1000.0;
+        tokens = tokens + refill > kBurst ? kBurst : tokens + refill;
         at = now;
         if (tokens < 1.0) return false;
         tokens -= 1.0;

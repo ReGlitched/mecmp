@@ -37,37 +37,30 @@ use first-person body selection to keep the head out of the view. Game menus,
 missing/dead characters and detached cameras suspend the override.
 
 For collision, both runners must enable **Player collision**. `game/collision.cpp`
-creates a real native Havok capsule / `fb::RigidBody` for each visible, nearby,
-opted-in remote player through Catalyst's `PhysicsEntityFactory`, using the same
-rigid-body creation path as `ClientCapsuleCollisionComponent`. The native physics
-manager registers the body in the world and spatial query manager. Its native
-transform follows the bounded, interpolated remote position on the client update
-thread. Faith's movement queries and collision handling resolve contacts; MECMP
-does not set the local player's position or velocity for collision response.
+creates a real native Havok box / `fb::RigidBody` for each visible, nearby,
+opted-in remote player through Catalyst's `PhysicsEntityFactory`. The native
+physics manager registers it in the world and spatial query manager. Its
+transform follows bounded, interpolated remote position and yaw on the client
+update thread. Faith's movement queries and collision handling resolve contacts;
+MECMP does not set the local player's position or velocity for collision response.
 
-The collision profile is hardcoded in world metres using Faith's model proportions
-as a reference: **0.22 m radius (0.44 m diameter), 1.70 m total standing height,
-and 1.00 m total crouched height**, at a fixed model scale of 1.0. These are a
-compact reference capsule, not an exact mesh silhouette. Adjust the reference
-constants together in `game/collision.cpp` if the model scale changes.
-
-The capsule stays upright and centred half its total height above the received
-player position, so its bottom remains anchored at the feet. Native capsule
-height is the separation between sphere centres: total height minus twice the
-radius. Standing/crouching changes recreate the shape through native removal
-and creation. Other animations do not change the shape or force recreation.
+The box profile is hardcoded from Faith's model proportions in world metres:
+**0.44 m width, 0.44 m depth, 1.70 m standing height and 1.00 m crouched height**,
+at a fixed model scale of 1.0. Half-extents are `(0.22, height / 2, 0.22)` and
+the transform is centred half the height above the received feet position.
+The box has flat faces and follows yaw while remaining upright. Unlike the
+old capsule, it needs no local-X-to-world-Y rotation or hemisphere subtraction.
+Standing/crouching recreates the shape through native removal and creation;
+other animations do not refit the shape. Position or yaw changes update its
+registered body transform.
 
 Collision does not query bones, evaluated model bounds, skinning/ANT state, or
-render/culling bounds. It uses the existing position and crouch announcements;
-there is no additional shape/bounds network packet. The registered capsule is a
-zero-mass native collision body, and Faith's own movement sweep still contributes
-its normal radius at contact. The menu reports registered native body count.
-
-Springboarding is left to Catalyst's controller and normal Havok obstacle
-queries against the registered capsules. MECMP does not hook the springboard
-processor or override its perception, eligibility, driver or animation.
-There is no separate springboard toggle; old `[collision] springboard`
-settings are ignored.
+render/culling bounds. It uses the existing position, yaw and crouch announcements;
+there is no additional bounds packet. The box retains the zero-mass native body
+kind and StaticLayer collision filter. Faith's own movement sweep still contributes
+its normal radius at contact. The menu reports registered remote body count.
+The local pose-copy tool, microphone echo and custom springboard perception
+bridge have been removed, including their bindings and settings.
 
 Hidden players, loopback ghosts, updates older than 300 ms, expired collision
 announcements, players beyond 80 m, leaving multiplayer, disabling collision and
@@ -96,15 +89,15 @@ Native points for the supported PC executable (image base 0x140000000):
 | Faith's collision capsule | ClassInfo 0x1427bd350; body ID +0x40, active +0x44 (0x142d57660) |
 | Character view mode | embedded interface +0x1d8, slot 0x141c3cc68 → 0x14390ed90 |
 | Native move tracker | ClassInfo 0x142853420, state +0x150 |
-| Capsule description / factory | 0x141a71d40; 0x1435169e0 |
-| Capsule dimensions | description +0x20 radius, +0x24 sphere-centre separation |
+| Body factory / native box constructor | 0x1435169e0; branch 0x143516562 → 0x143f2f140 |
+| Box description | shape type 1; 16-byte-aligned half-extents vector at +0x20; body kind 2 at +0x14 |
 | Physics creation info | 0x142d4d1a0; owner entity bus +0x28 |
 | Body transform / source | 0x1434f8930 / 0x1434f6d90 |
 | Native body enable / spatial registration | 0x1434e90f0 / 0x1434e9270 |
 | Spatial removal / disable / deferred destruction | 0x1434f6610 / 0x1434f65f0 / 0x1434f5550 |
 
 Camera hooks require both expected vtable slots. Collision validates the native
-capsule factory's call sites and rigid-body virtuals before enabling the feature.
+box constructor branch, shared factory call sites and rigid-body virtuals before enabling the feature.
 Collision body lifecycle and transforms run from the native client replay updater;
 camera world probes run on the server thread. The old local movement job hook,
 swept overlap solver and movement-controller transform/velocity setters are removed.

@@ -17,6 +17,7 @@
 #include "game/hooks.h"
 #include "game/level.h"
 #include "game/native_voice.h"
+#include "game/voice_limiter.h"
 #include "net/net.h"
 #include "ui/chat.h"
 #include "ui/gamepad.h"
@@ -33,18 +34,38 @@ std::mutex g_mutex;
 Status g_status;
 std::set<uint32_t> g_muted;
 
+bool spatialMix(uint32_t speaker, const float* position, bool crouched, const net::PlayerState& local,
+                const config::Settings& cfg, native_voice::Mix& mix) {
+    float distance2 = 0;
+    for (int i = 0; i < 3; ++i) {
+        const float delta = position[i] - local.pos[i];
+        distance2 += delta * delta;
+    }
+    const float distance = std::sqrt(distance2);
+    const float range = std::clamp(cfg.voiceDistance, 5.f, 100.f);
+    if (!std::isfinite(distance) || distance >= range) return false;
+    const float fade = std::clamp((range - distance) / (range - 2.f), 0.f, 1.f);
+    const float distanceGain = fade * std::sqrt(fade);
+    mix.peer = speaker;
+    mix.gain = std::clamp(std::clamp(cfg.voiceVolume, 0.f, 2.f) * kPlaybackGain * distanceGain, 0.f, 2.f);
+    std::copy_n(position, 3, mix.position);
+    mix.position[1] += crouched ? .85f : 1.55f;
+    return true;
+}
+
 struct Microphone {
     IMMDeviceEnumerator* devices = nullptr;
     IMMDevice* device = nullptr;
     IAudioClient* client = nullptr;
     IAudioCaptureClient* capture = nullptr;
     bool recording = false;
-    std::array<int16_t, net::kVoiceSamples> partial{};
+    std::array<float, net::kVoiceSamples> partial{};
+    float limiter = 1.f;
     size_t used = 0;
     ~Microphone() { close(); }
     void close() {
         if (client && recording) client->Stop();
-        recording = false; used = 0;
+        recording = false; used = 0; limiter = 1.f;
         if (capture) { capture->Release(); capture = nullptr; }
         if (client) { client->Release(); client = nullptr; }
         if (device) { device->Release(); device = nullptr; }
@@ -68,10 +89,11 @@ struct Microphone {
         if (!recording) close();
         return hr;
     }
-    HRESULT read(uint32_t stream, uint32_t& sequence, uint32_t generation, float gain, float& peak, uint64_t& sent) {
+    HRESULT read(uint32_t stream, uint32_t& sequence, uint32_t generation, float gain, float& peak,
+                 uint64_t& sent) {
         // A stalled capture thread discards old speech instead of sending a long
-        // burst. Six blocks are the entire outgoing latency budget.
-        std::array<net::VoiceFrame, 6> recent;
+        // burst. Keep at most 120 ms of encoded speech.
+        std::array<net::VoiceFrame, net::kVoiceCaptureFrames> recent;
         size_t count = 0;
         HRESULT hr = S_OK;
         for (int pass = 0; pass < 32; ++pass) {
@@ -87,13 +109,15 @@ struct Microphone {
             if (frames > net::kVoiceRate) { used = 0; capture->ReleaseBuffer(frames); continue; }
             const auto* input = reinterpret_cast<const int16_t*>(data);
             for (UINT32 i = 0; i < frames; ++i) {
-                const float sample = (flags & AUDCLNT_BUFFERFLAGS_SILENT) || !input ? 0.f : input[i] * gain;
-                partial[used++] = static_cast<int16_t>(std::clamp(sample, -32768.f, 32767.f));
-                peak = std::max(peak, std::fabs(sample) / 32768.f);
+                const float sample = (flags & AUDCLNT_BUFFERFLAGS_SILENT) || !input ? 0.f : (input[i] / 32768.f) * gain;
+                partial[used++] = sample;
+                peak = std::max(peak, std::fabs(sample));
                 if (used == partial.size()) {
                     auto& frame = recent[count++ % recent.size()];
                     frame.stream = stream; frame.sequence = sequence++;
-                    for (size_t n = 0; n < partial.size(); ++n) frame.samples[n] = net::encodeVoiceSample(partial[n]);
+                    voice_limiter::apply(partial.data(), partial.size(), static_cast<float>(net::kVoiceRate), limiter);
+                    for (size_t n = 0; n < partial.size(); ++n)
+                        frame.samples[n] = net::encodeVoiceSample(static_cast<int16_t>(std::lround(partial[n] * 32768.f)));
                     used = 0;
                 }
             }
@@ -102,7 +126,10 @@ struct Microphone {
         }
         if (SUCCEEDED(hr)) {
             const size_t begin = count > recent.size() ? count - recent.size() : 0;
-            for (size_t i = begin; i < count; ++i) { net::publishVoice(recent[i % recent.size()], generation); ++sent; }
+            for (size_t i = begin; i < count; ++i) {
+                const auto& frame = recent[i % recent.size()];
+                net::publishVoice(frame, generation); ++sent;
+            }
         }
         return hr;
     }
@@ -141,8 +168,9 @@ DWORD WINAPI worker(void*) {
             state.nativeReady = native_voice::available();
             net::PlayerState local;
             CameraView view{};
-            const bool active = cfg->voiceEnabled && key && currentWorld && !level::inFrontEnd() &&
+            const bool playable = cfg->voiceEnabled && currentWorld && !level::inFrontEnd() &&
                 net::localState(local) && (local.flags & net::kStateInLevel) && camera::read(view);
+            const bool active = playable && key;
             if (!active && wasActive) { native_voice::reset(); mic.close(); speaking.clear(); }
             wasActive = active;
             std::set<uint32_t> muted;
@@ -159,25 +187,8 @@ DWORD WINAPI worker(void*) {
                 uint32_t age = 0;
                 if (!active || peer.muted || mixCount >= mixes.size() ||
                     !net::remoteState(remote.id, position, age) || age > 1000 || !(position.flags & net::kStateInLevel)) continue;
-                float delta[3];
-                float distance2 = 0;
-                for (int i = 0; i < 3; ++i) {
-                    delta[i] = position.pos[i] - local.pos[i];
-                    distance2 += delta[i] * delta[i];
-                }
-                const float distance = std::sqrt(distance2);
-                const float range = std::clamp(cfg->voiceDistance, 5.f, 100.f);
-                if (!std::isfinite(distance) || distance >= range) continue;
-                const float fade = std::clamp((range - distance) / (range - 2.f), 0.f, 1.f);
-                // fade^1.5 drops speech faster while keeping full near gain within 2 m.
-                const float distanceGain = fade * std::sqrt(fade);
-                const float volume = std::clamp(
-                    std::clamp(cfg->voiceVolume, 0.f, 2.f) * kPlaybackGain * distanceGain, 0.f, 2.f);
                 native_voice::Mix mix;
-                mix.peer = remote.id; mix.gain = volume;
-                std::copy_n(position.pos, 3, mix.position);
-                mix.position[1] += remote.crouched ? .85f : 1.55f;
-                mixes[mixCount++] = mix;
+                if (spatialMix(remote.id, position.pos, remote.crouched, local, *cfg, mix)) mixes[mixCount++] = mix;
             }
             native_voice::scene(mixes.data(), mixCount);
             // Drain even while disabled: enabling voice never plays old speech.
@@ -213,7 +224,8 @@ DWORD WINAPI worker(void*) {
                 }
                 if (mic.recording) {
                     float peak = 0;
-                    failure = mic.read(stream, sequence, generation, std::clamp(cfg->voiceMicGain, 0.f, 4.f), peak, sent);
+                    failure = mic.read(stream, sequence, generation, std::clamp(cfg->voiceMicGain, 0.f, 4.f),
+                                       peak, sent);
                     state.microphoneLevel = std::min(1.f, peak);
                     if (FAILED(failure)) { mic.close(); retryAt = now + 3000; }
                 }

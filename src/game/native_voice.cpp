@@ -7,12 +7,14 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 #include "core/config.h"
 #include "core/log.h"
 #include "game/engine.h"
 #include "game/level.h"
 #include "game/player_audio.h"
+#include "game/voice_limiter.h"
 
 namespace mecmp::game::native_voice {
 namespace {
@@ -21,7 +23,7 @@ constexpr uintptr_t kDacSlot = 0x1420fa368, kDacProcess = 0x142dfad40;
 constexpr uintptr_t kSourceSlot = 0x1420fd9f8, kSourceProcess = 0x142e17410;
 constexpr uintptr_t kSourceClass = 0x1420fdaa0, kSourceDispatch = 0x1420fd9e8;
 constexpr uintptr_t kInstanceVtable = 0x141acfad0, kSystemVtable = 0x141abd460;
-constexpr size_t kPeers = 15, kBlocks = 16, kFrames = 256;
+constexpr size_t kPeers = 15, kBlocks = 320 / net::kVoiceFrameMs, kFrames = 256;
 constexpr size_t kVoiceRefStride = 0x28;
 constexpr uint32_t kMaxGraphVoices = 64;
 using ProcessFn = uint64_t (*)(uintptr_t, uintptr_t, bool);
@@ -33,11 +35,12 @@ std::atomic<uint32_t> g_sourceCount{0};
 std::atomic<uint64_t> g_created{0}, g_blocksRendered{0};
 struct Block { uint32_t sequence = 0; bool valid = false; std::array<float, net::kVoiceSamples> pcm{}; };
 struct Speaker {
-    uint32_t peer = 0, stream = 0, expected = 0;
+    uint32_t peer = 0;
+    uint32_t stream = 0, expected = 0;
     DWORD received = 0, start = 0;
     size_t cursor = 0;
     Mix mix;
-    float gain = 0, phase = 0, a = 0, b = 0;
+    float gain = 0, phase = 0, a = 0, b = 0, limiter = 1.f;
     bool primed = false;
     std::array<Block, kBlocks> blocks;
 };
@@ -74,7 +77,7 @@ template<class T> T at(const uint8_t* data, size_t offset) { T value; std::memcp
 
 void clear(Speaker& s) {
     s.peer = s.stream = 0; s.cursor = 0;
-    s.phase = s.a = s.b = s.gain = 0; s.primed = false;
+    s.phase = s.a = s.b = s.gain = 0; s.limiter = 1.f; s.primed = false;
     for (auto& block : s.blocks) block.valid = false;
 }
 float pop(Speaker& s) {
@@ -92,6 +95,29 @@ bool finite(const Mix& m) {
     return true;
 }
 
+// The pipe template sends to "Reverb & EarlyReflections". That master bus
+// forks the unpanned signal into both the room IR and a separate reflection
+// branch. Use its same-format "Reverb" input so only the room IR is returned.
+uintptr_t roomReverbBus() {
+    const auto system = mem::readOr<uintptr_t>(rva(0x1423dd580));
+    if (!system || mem::readOr<uintptr_t>(system) != rva(kSystemVtable)) return 0;
+    const auto audio = mem::readOr<uintptr_t>(system + 0x50);
+    if (!audio || !isKindOf(reinterpret_cast<void*>(audio), 0x1427d0e30)) return 0;
+    const auto master = mem::readOr<uintptr_t>(audio + 0x18);
+    if (!master || !isKindOf(reinterpret_cast<void*>(master), 0x1427d1070)) return 0;
+    const auto buses = mem::readOr<uintptr_t>(master + 0x20);
+    const auto count = buses ? mem::readOr<uint32_t>(buses - 4) : 0;
+    if (!count || count > 128) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const auto bus = mem::readOr<uintptr_t>(buses + i * sizeof(uintptr_t));
+        if (!bus || !isKindOf(reinterpret_cast<void*>(bus), 0x1427c85e0) ||
+            mem::readOr<uint8_t>(bus + 0x18) != 2 || !mem::readOr<uint8_t>(bus + 0x19)) continue;
+        std::string name;
+        if (mem::readCString(mem::readOr<uintptr_t>(bus + 0x10), name, 64) && name == "Reverb") return bus;
+    }
+    return 0;
+}
+
 Graph* copyGraph(uintptr_t asset) {
     if (!asset || !isKindOf(reinterpret_cast<void*>(asset), 0x1427d1130)) return nullptr;
     auto copy = std::make_unique<Graph>();
@@ -103,6 +129,10 @@ Graph* copyGraph(uintptr_t asset) {
     const auto output = mem::readOr<uintptr_t>(outputs);
     if (!isKindOf(reinterpret_cast<void*>(output), 0x1427c7020) ||
         !mem::read(output, g.output, sizeof(g.output))) return nullptr;
+    const auto originalReverbBus = at<uintptr_t>(g.output, 0x100);
+    const auto reverbBus = roomReverbBus();
+    if (!originalReverbBus || !reverbBus || originalReverbBus == at<uintptr_t>(g.output, 0x48) ||
+        mem::readOr<uint8_t>(originalReverbBus + 0x18) != 2) return nullptr;
     // Sound +0x1b0 has one VoiceRef per compiled SoundGraphInfo voice.
     // Refuse an unsupported layout before starting an audible template.
     const auto voices = at<uintptr_t>(g.graph, 0x38);
@@ -130,10 +160,20 @@ Graph* copyGraph(uintptr_t asset) {
     const auto n = connections ? mem::readOr<uint32_t>(connections - 4) : 0;
     if (n > g.connections.values.size() || (n && !mem::read(connections, g.connections.data(), n * sizeof(Connection)))) return nullptr;
     g.connections.count = n;
-    for (auto& c : g.connections.values) {
+    bool reverbRouted = false;
+    for (uint32_t i = 0; i < n; ++i) {
+        auto& c = g.connections.values[i];
         if (c.context == output) c.context = reinterpret_cast<uintptr_t>(g.output);
         else if (c.context == sampler) c.context = reinterpret_cast<uintptr_t>(g.sampler);
+        else if (c.context == originalReverbBus) {
+            // Send0 binds to the compiled connection's bus context. Changing
+            // ConeOutput::ReverbSend alone leaves the old bus audible.
+            c.context = reverbBus;
+            reverbRouted = true;
+        }
     }
+    if (!reverbRouted) return nullptr;
+    put(g.output, 0x100, reverbBus);
     put(g.graph, 0x10, reinterpret_cast<uintptr_t>(g.nodes.data()));
     put(g.graph, 0x48, reinterpret_cast<uintptr_t>(g.connections.data()));
     put(g.asset, 0x38, reinterpret_cast<uintptr_t>(g.graph));
@@ -149,14 +189,24 @@ Graph* copyGraph(uintptr_t asset) {
     if (at<uintptr_t>(g.sampler, 0xe0) == output) put(g.sampler, 0xe0, reinterpret_cast<uintptr_t>(g.output));
     // Faith's first-person graphs use Listener. A world voice must use Sound.
     put(g.output, 0x54, uint32_t{0});
+    // ConeOutput's near-listener bleed is separate from TransformSource. The
+    // native panner radius is (max(distance, min) - min) / (max - min), and
+    // radii >= 1 are fully positional. Use [-1, 0] so even zero distance has
+    // radius 1, with a nonzero denominator. Never collapse this range to [0, 0].
+    put(g.output, 0xc8, -1.f); // BleedMinDistance
+    put(g.output, 0xcc, 0.f); // BleedMaxDistance: no listener-centered blend
+    put(g.output, 0xc4, 0.f); // PanSize: point source
+    // Constant, disconnected CenterLevel / LfeLevel ports: no extra sends.
+    put(g.output, 0xd0, uint64_t{0});
+    put(g.output, 0xd8, uint64_t{0});
     put(g.output, 0x44, 0.f); // dB
     // Native HF damping fields are factors, not dB gains.
     put(g.output, 0x3c, 1.f); put(g.output, 0x40, 1.f);
     // ConeOutput ReverbGain is +0xf8; +0xf0 belongs to its attenuation curve.
-    put(g.output, 0xf8, -6.f); // native room reverb send gain, dB
+    put(g.output, 0xf8, -6.f); // room IR send gain, dB; early-reflection branch excluded
     g.output[0x71] = 0; // no HDR ducking of conversational speech
     g_graphs.push_back(std::move(copy));
-    MLOG("voice: native spatial graph ready (sound transform, obstruction and reverb)");
+    MLOG("voice: native spatial graph ready (sound transform, obstruction, reverb-only send)");
     return g_graphs.back().get();
 }
 
@@ -221,10 +271,11 @@ void render(size_t index, const Output& out, DWORD now) {
     const float smooth = 1.f - std::exp(-1.f / (rate * .005f));
     for (size_t i = 0; i < out.frames; ++i) {
         s.gain += (s.mix.gain - s.gain) * smooth;
-        out.pcm[i] = std::clamp((s.a + (s.b - s.a) * s.phase) * s.gain, -1.f, 1.f);
+        out.pcm[i] = (s.a + (s.b - s.a) * s.phase) * s.gain;
         s.phase += step;
         while (s.phase >= 1.f) { s.phase -= 1.f; s.a = s.b; s.b = pop(s); }
     }
+    voice_limiter::apply(out.pcm, out.frames, rate, s.limiter);
 }
 uint64_t sourceProcess(uintptr_t module, uintptr_t mixer, bool last) {
     const int index = sourceIndex(module);

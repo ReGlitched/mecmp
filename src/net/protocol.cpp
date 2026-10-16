@@ -91,7 +91,7 @@ size_t writeVoice(char* buf, const Header& h, const VoiceFrame& frame) {
     if (!frame.stream) return 0;
     char* p = buf;
     put(p, h); put(p, frame.stream); put(p, frame.sequence);
-    std::memcpy(p, frame.samples.data(), frame.samples.size());
+    std::memcpy(p, frame.samples.data(), kVoiceSampleBytes);
     return sizeof(Header) + kVoicePayloadBytes;
 }
 bool readVoice(const char* payload, size_t size, VoiceFrame& out) {
@@ -100,7 +100,7 @@ bool readVoice(const char* payload, size_t size, VoiceFrame& out) {
     std::memcpy(&frame.stream, payload, 4);
     std::memcpy(&frame.sequence, payload + 4, 4);
     if (!frame.stream) return false;
-    std::memcpy(frame.samples.data(), payload + 8, frame.samples.size());
+    std::memcpy(frame.samples.data(), payload + 8, kVoiceSampleBytes);
     out = frame;
     return true;
 }
