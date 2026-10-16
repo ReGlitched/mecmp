@@ -27,7 +27,7 @@ them off), and a short notice shows when someone joins or leaves (*Join/leave no
 list shows each player's connection: *good*, or the share of their updates that did not arrive. *Go to* next to a player
 takes you to them (a short fade, then you are where they are). **Summon**: tap **G** and everyone gets a marker where you stand and a panel to hold **1** (go) or **2** (no); hold G to pull players in who allowed it (see the changelog and the *Controls* tab). Press **Enter** to
 chat (not while the game's own pause menu or map is up): type a line and press Enter (Escape cancels); messages show bottom-left for a while. The menu works with mouse, keyboard or gamepad; while it is open the game does not see the
-gamepad. The *Controls* tab changes the keys and buttons for the menu, chat and markers. Everything can also be set in
+gamepad. The *Controls* tab changes the keys and buttons for the menu, chat and markers: any key, and most of them also the middle or side mouse buttons. No Insert key (a laptop)? Set `menu_key` in mecmp.ini to another key, e.g. `menu_key=F8` or `menu_key=M`. Everything can also be set in
 `mecmp.ini` (the menu saves to it).
 
 The mod starts **offline**: nothing is sent and no router port is opened until you host, join or pick
@@ -62,9 +62,6 @@ Developer builds (CMake option `MECMP_DEBUG_KEYS`, on by default, off for releas
 Versions: everyone in a session needs the same wire protocol (this version uses protocol 7). Packets
 from a different protocol are ignored and the log says which version the other side runs. Protocol 7
 also lets a host or server admit only players who answer a challenge, so older versions cannot join.
-
-While you are in a session, the game's own menus (pause menu, map) no longer pause the game: the
-other players keep moving and you keep sending your position.
 
 Solo test (developer builds only): *Solo test* in the menu, or `join=127.0.0.1:47800`. Your own packets come back and a
 ghost copies your moves 3 m away along the world X axis (`loopback_offset`); it stays put while you

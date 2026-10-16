@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+### Runs
+- **No teleports in or out of a run, from anywhere.** The players panel already refused while you are in a
+  time trial or dash; now the menu's *Go to* / *Ask to go*, *Summon* buttons, the "Go back?" hold after a summon
+  and an accepted "may I come?" do too (greyed out with a reason, or a notice). The rule sits in the teleport
+  itself, so a path added later cannot skip it.
+- **A Beat L.E. (ReachThis) is not a run.** Opening one counted as starting a time trial: after closing it you
+  stayed "in a time trial" (no teleports, shown above your head) until another run or 30 minutes. Reaching one
+  is not announced as a time either.
+
+### Faster ghosts after a load
+- **Ghosts come back much sooner after a level load or a checkpoint reload.** Ghosts were made one every 2 s,
+  after a 3 s wait, so five players took about 13 s. Now the next ghost is made as soon as the previous one is
+  ready (usually a fraction of a second), and the first one 1.5 s after your character appears. If a ghost's
+  parts never arrive, it still waits 2 s, as before.
+
+### Pause
+- **The pause menu and the map pause the game again**, in a session too. (Since 0.9.0 they kept the world
+  running while you were in a session; players wanted the pause back.)
+
+### Fixes
+- **Ghosts no longer freeze when someone joins.** A new ghost spawner the game creates (moving around the
+  city) could take over from the one the ghosts came from. The next spawn, from that spawner, failed, and the
+  mod then took every existing ghost for destroyed and stopped moving them: they froze where they were, and
+  the joining player never appeared ("the spawner returned no character" every 2 s). Now the chosen spawner
+  stays, each ghost is recognised by its own data, a failed spawn changes nothing for the others, and a
+  spawner that gives no character three times in a row is replaced by another.
+
+### Controls
+- **Any key can be a bind.** Every key on the keyboard can now be bound in the *Controls* tab: arrows, the
+  number pad, punctuation, F13–F24, Tab, Space, Shift/Ctrl/Alt, and keys only some layouts have (a UK
+  keyboard's `#`, say), not only a fixed list. Keys show their own name on your layout ("Page Up", "Num 4").
+  Escape, the Windows keys and Print Screen stay free.
+- **The menu key can be anything the other binds can,** including a letter, a digit or the middle or side
+  mouse buttons. A typing key used as the menu key still types in the chat and in the menu's text boxes.
+- F10 and Alt work as binds (Windows sends them as system keys, which the mod did not listen to).
+
 ### Player sounds (by ReGlitched)
 - **Hear other players.** Their footsteps, hand contacts, landings, breathing, effort grunts and combat sounds
   play through the game's own audio, from where they are. *Players* tab: *Other players' game sounds* and a
